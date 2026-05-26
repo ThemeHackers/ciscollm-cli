@@ -28,13 +28,18 @@ async function runSimulationTests() {
     assert.strictEqual(mockSwitch.getState().prompt, 'Switch1#');
 
 
-    const confTermOut = await mockSwitch.execute('configure terminal');
+    const confTermOut = await mockSwitch.execute('config t');
     assert.ok(confTermOut.includes('Enter configuration commands'), 'Should output config message');
     assert.strictEqual(mockSwitch.getState().currentMode, 'GLOBAL_CONFIG');
     assert.strictEqual(mockSwitch.getState().prompt, 'Switch1(config)#');
 
 
-    await mockSwitch.execute('interface GigabitEthernet0/1');
+    const badIntf = await mockSwitch.execute('interface gi9/9');
+    assert.ok(badIntf.includes('^'), 'Invalid interface command should include caret marker');
+    assert.ok(badIntf.includes('Bad interface parameter'), 'Invalid interface command should report bad interface parameter');
+
+
+    await mockSwitch.execute('int gi0/1');
     assert.strictEqual(mockSwitch.getState().currentMode, 'INTERFACE_CONFIG');
     assert.strictEqual(mockSwitch.getState().prompt, 'Switch1(config-if)#');
     console.log(' -> Navigation test passed.');
@@ -43,7 +48,7 @@ async function runSimulationTests() {
     console.log('\n[Test 3]: Simulating interface configuration...');
     
    
-    await mockSwitch.execute('ip address 10.0.1.1 255.255.255.0');
+    await mockSwitch.execute('ip add 10.0.1.1 255.255.255.0');
     
   
     await mockSwitch.execute('no shutdown');
@@ -82,7 +87,8 @@ async function runSimulationTests() {
 
     console.log('\n[Test 5]: Simulating command errors...');
     const errOutput = await mockSwitch.execute('ip addresss 1.1.1.1 255.255.255.0');
-    assert.ok(errOutput.includes('Unrecognized command'), 'Must return unrecognized error');
+    assert.ok(errOutput.includes('^'), 'Must return a caret marker for the syntax error');
+    assert.ok(errOutput.includes('Invalid input'), 'Must return invalid input error text');
     
     const analysis = ErrorAnalyzer.checkOutput(errOutput);
     assert.strictEqual(analysis.hasError, true, 'Error analyzer must catch the warning');
