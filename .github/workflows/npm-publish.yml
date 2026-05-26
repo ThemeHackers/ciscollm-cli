@@ -17,6 +17,8 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    env:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 
     steps:
       - name: Checkout repository
@@ -34,11 +36,11 @@ jobs:
         run: npm ci
 
       - name: Configure npm auth from token
-        if: ${{ secrets.NPM_TOKEN != '' }}
-        run: npm config set //registry.npmjs.org/:_authToken=${{ secrets.NPM_TOKEN }}
+        if: ${{ env.NPM_TOKEN != '' }}
+        run: npm config set //registry.npmjs.org/:_authToken=$NPM_TOKEN
 
       - name: Use trusted publishing
-        if: ${{ secrets.NPM_TOKEN == '' }}
+        if: ${{ env.NPM_TOKEN == '' }}
         run: echo "No NPM_TOKEN found. Publishing will use npm trusted publishing with OIDC."
 
       - name: Run tests
