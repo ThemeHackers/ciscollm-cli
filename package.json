@@ -15,7 +15,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/ThemeHackers/ciscollm-cli.git"
+    "url": "git+https://github.com/ThemeHackers/ciscollm-cli.git"
   },
   "bugs": {
     "url": "https://github.com/ThemeHackers/ciscollm-cli/issues"
