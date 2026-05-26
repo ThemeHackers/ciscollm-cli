@@ -4,11 +4,31 @@ import { CiscoDeviceMode } from '../../shared/types';
 interface InterfaceConfig {
     ip: string | null;
     subnet: string | null;
-    shutdown: boolean;
+    adminShutdown: boolean;
+    lineProtocolUp: boolean;
     description: string | null;
 }
 
 type CommandTokenPattern = string[];
+
+interface RoutingEntry {
+    network: string;
+    mask: string;
+    nextHop: string | null;
+    outgoingInterface: string | null;
+    connected: boolean;
+}
+
+interface MockSnapshot {
+    state: ReturnType<BaseSession['getState']>;
+    interfaces: Map<string, InterfaceConfig>;
+    activeInterface: string | null;
+    vlans: Set<number>;
+    shellEnabled: boolean;
+    shellVariables: Map<string, string>;
+    shellFunctions: Map<string, string>;
+    routes: RoutingEntry[];
+}
 
 export class MockSession extends BaseSession {
     private interfaces: Map<string, InterfaceConfig> = new Map();
@@ -17,6 +37,9 @@ export class MockSession extends BaseSession {
     private shellEnabled: boolean = false;
     private shellVariables: Map<string, string> = new Map();
     private shellFunctions: Map<string, string> = new Map();
+    private routes: RoutingEntry[] = [];
+    private backupSnapshot: MockSnapshot | null = null;
+    private rollbackSnapshots: MockSnapshot[] = [];
     private readonly commandPatterns: Array<{ pattern: CommandTokenPattern; action: (command: string, lower: string) => string | null }>;
 
     constructor(private deviceId: string = 'Switch') {
@@ -28,9 +51,28 @@ export class MockSession extends BaseSession {
         };
 
    
-        this.interfaces.set('GigabitEthernet0/0', { ip: '192.168.1.254', subnet: '255.255.255.0', shutdown: false, description: 'Management Uplink' });
-        this.interfaces.set('GigabitEthernet0/1', { ip: null, subnet: null, shutdown: true, description: null });
-        this.interfaces.set('GigabitEthernet0/2', { ip: null, subnet: null, shutdown: true, description: null });
+        this.interfaces.set('GigabitEthernet0/0', {
+            ip: '192.168.1.254',
+            subnet: '255.255.255.0',
+            adminShutdown: false,
+            lineProtocolUp: true,
+            description: 'Management Uplink'
+        });
+        this.interfaces.set('GigabitEthernet0/1', {
+            ip: null,
+            subnet: null,
+            adminShutdown: true,
+            lineProtocolUp: false,
+            description: null
+        });
+        this.interfaces.set('GigabitEthernet0/2', {
+            ip: null,
+            subnet: null,
+            adminShutdown: true,
+            lineProtocolUp: false,
+            description: null
+        });
+        this.refreshConnectedRoutes();
 
         this.commandPatterns = [
             { pattern: ['configure', 'terminal'], action: () => this.transitionToGlobalConfig('Enter configuration commands, one per line.  End with CNTL/Z.') },
@@ -40,12 +82,15 @@ export class MockSession extends BaseSession {
             { pattern: ['terminal', 'shell'], action: () => this.toggleShell(true) },
             { pattern: ['shell', 'processing', 'full'], action: () => this.requireGlobalConfigAndToggleShell(true) },
             { pattern: ['no', 'shell', 'processing'], action: () => this.requireGlobalConfigAndToggleShell(false) },
+            { pattern: ['copy', 'running-config'], action: (command) => this.handleCopyRunningConfig(command) },
+            { pattern: ['configure', 'replace'], action: (command) => this.handleConfigureReplace(command) },
             { pattern: ['interface'], action: (command) => this.handleInterfaceCommand(command) },
             { pattern: ['vlan'], action: (command) => this.handleVlanCommand(command) },
             { pattern: ['exit'], action: () => this.handleExitCommand() },
             { pattern: ['end'], action: () => this.handleEndCommand() },
             { pattern: ['ip', 'address'], action: (command) => this.handleIpAddressCommand(command) },
             { pattern: ['no', 'ip', 'address'], action: (command) => this.handleNoIpAddressCommand(command) },
+            { pattern: ['ip', 'route'], action: (command) => this.handleIpRouteCommand(command) },
             { pattern: ['shutdown'], action: () => this.handleShutdownCommand() },
             { pattern: ['no', 'shutdown'], action: () => this.handleNoShutdownCommand() },
             { pattern: ['description'], action: (command) => this.handleDescriptionCommand(command) },
@@ -53,11 +98,11 @@ export class MockSession extends BaseSession {
             { pattern: ['show', 'ip', 'interface', 'brief'], action: () => this.handleShowIpInterfaceBrief() },
             { pattern: ['show', 'running-config'], action: () => this.handleShowRunningConfig() },
             { pattern: ['show', 'run'], action: () => this.handleShowRunningConfig() },
-            { pattern: ['show', 'ip', 'route'], action: () => this.formatInvalidInput('show ip route', 0) },
+            { pattern: ['show', 'ip', 'route'], action: () => this.handleShowIpRoute() },
             { pattern: ['show', 'vlan', 'brief'], action: () => this.handleShowVlanBrief() },
-            { pattern: ['show', 'interfaces'], action: () => this.formatInvalidInput('show interfaces', 0) },
-            { pattern: ['show', 'interfaces', 'status'], action: () => this.formatInvalidInput('show interfaces status', 0) },
-            { pattern: ['show', 'interfaces', 'brief'], action: () => this.formatInvalidInput('show interfaces brief', 0) }
+            { pattern: ['show', 'interfaces'], action: () => this.handleShowInterfaces() },
+            { pattern: ['show', 'interfaces', 'status'], action: () => this.handleShowInterfacesStatus() },
+            { pattern: ['show', 'interfaces', 'brief'], action: () => this.handleShowInterfacesStatus() }
         ];
     }
 
@@ -115,10 +160,7 @@ export class MockSession extends BaseSession {
         }
 
         if (this.shellEnabled) {
-            clean = clean.replace(/\$(\w+|\{\w+\})/g, (match, name) => {
-                const cleanName = name.startsWith('{') ? name.slice(1, -1) : name;
-                return this.shellVariables.get(cleanName) || '';
-            });
+            clean = this.substituteShellVariables(clean);
             lower = clean.toLowerCase();
         }
 
@@ -213,6 +255,7 @@ export class MockSession extends BaseSession {
             return this.execute(body, timeoutMs);
         }
 
+        await this.simulateLatency(clean, timeoutMs);
 
         const parsed = this.matchCommand(clean);
         if (parsed) {
@@ -238,17 +281,7 @@ export class MockSession extends BaseSession {
             const dest = clean.split(/\s+/)[1];
             if (!dest) return this.formatIncompleteCommand(clean);
 
-            let pingSuccess = false;
-            if (dest === '127.0.0.1' || dest === '8.8.8.8' || dest === '192.168.1.254') {
-                pingSuccess = true;
-            } else {
-                for (const config of this.interfaces.values()) {
-                    if (config.ip === dest && !config.shutdown) {
-                        pingSuccess = true;
-                        break;
-                    }
-                }
-            }
+            const pingSuccess = this.isDestinationReachable(dest);
 
             let output = `Type escape sequence to abort.\nSending 5, 100-byte ICMP Echos to ${dest}, timeout is 2 seconds:\n`;
             if (pingSuccess) {
@@ -397,7 +430,13 @@ export class MockSession extends BaseSession {
 
         if (!this.interfaces.has(resolvedName)) {
             if (resolvedName.toLowerCase().startsWith('loopback') || resolvedName.toLowerCase().startsWith('vlan')) {
-                this.interfaces.set(resolvedName, { ip: null, subnet: null, shutdown: false, description: null });
+                this.interfaces.set(resolvedName, {
+                    ip: null,
+                    subnet: null,
+                    adminShutdown: false,
+                    lineProtocolUp: true,
+                    description: null
+                });
             } else {
                 return this.formatBadInterfaceParameter(command, intName);
             }
@@ -450,6 +489,7 @@ export class MockSession extends BaseSession {
 
     private handleIpAddressCommand(command: string): string {
         if (this.state.currentMode === 'INTERFACE_CONFIG' && this.activeInterface) {
+            this.pushRollbackSnapshot();
             const parts = command.trim().split(/\s+/);
             const ip = parts[2];
             const subnet = parts[3];
@@ -459,6 +499,8 @@ export class MockSession extends BaseSession {
             const intf = this.interfaces.get(this.activeInterface)!;
             intf.ip = ip;
             intf.subnet = subnet;
+            intf.lineProtocolUp = !intf.adminShutdown;
+            this.refreshConnectedRoutes();
             return '';
         }
         return this.formatInvalidInput(command, 0);
@@ -466,9 +508,11 @@ export class MockSession extends BaseSession {
 
     private handleNoIpAddressCommand(command: string): string {
         if (this.state.currentMode === 'INTERFACE_CONFIG' && this.activeInterface) {
+            this.pushRollbackSnapshot();
             const intf = this.interfaces.get(this.activeInterface)!;
             intf.ip = null;
             intf.subnet = null;
+            this.refreshConnectedRoutes();
             return '';
         }
         return this.formatInvalidInput(command, 0);
@@ -476,8 +520,11 @@ export class MockSession extends BaseSession {
 
     private handleShutdownCommand(): string {
         if (this.state.currentMode === 'INTERFACE_CONFIG' && this.activeInterface) {
+            this.pushRollbackSnapshot();
             const intf = this.interfaces.get(this.activeInterface)!;
-            intf.shutdown = true;
+            intf.adminShutdown = true;
+            intf.lineProtocolUp = false;
+            this.refreshConnectedRoutes();
             return '';
         }
         return this.formatInvalidInput('shutdown', 0);
@@ -485,8 +532,11 @@ export class MockSession extends BaseSession {
 
     private handleNoShutdownCommand(): string {
         if (this.state.currentMode === 'INTERFACE_CONFIG' && this.activeInterface) {
+            this.pushRollbackSnapshot();
             const intf = this.interfaces.get(this.activeInterface)!;
-            intf.shutdown = false;
+            intf.adminShutdown = false;
+            intf.lineProtocolUp = true;
+            this.refreshConnectedRoutes();
             return '';
         }
         return this.formatInvalidInput('no shutdown', 0);
@@ -494,6 +544,7 @@ export class MockSession extends BaseSession {
 
     private handleDescriptionCommand(command: string): string {
         if (this.state.currentMode === 'INTERFACE_CONFIG' && this.activeInterface) {
+            this.pushRollbackSnapshot();
             const desc = command.trim().substring(command.trim().indexOf(' ') + 1).trim();
             const intf = this.interfaces.get(this.activeInterface)!;
             intf.description = desc;
@@ -504,6 +555,7 @@ export class MockSession extends BaseSession {
 
     private handleNoDescriptionCommand(): string {
         if (this.state.currentMode === 'INTERFACE_CONFIG' && this.activeInterface) {
+            this.pushRollbackSnapshot();
             const intf = this.interfaces.get(this.activeInterface)!;
             intf.description = null;
             return '';
@@ -515,8 +567,8 @@ export class MockSession extends BaseSession {
         let output = 'Interface                  IP-Address      OK? Method Status                Protocol\n';
         for (const [name, config] of this.interfaces.entries()) {
             const ip = config.ip || 'unassigned';
-            const status = config.shutdown ? 'administratively down' : 'up';
-            const proto = config.shutdown ? 'down' : 'up';
+            const status = config.adminShutdown ? 'administratively down' : 'up';
+            const proto = config.lineProtocolUp ? 'up' : 'down';
             output += `${name.padEnd(26)} ${ip.padEnd(15)} YES manual ${status.padEnd(21)} ${proto}\n`;
         }
         return output;
@@ -528,8 +580,12 @@ export class MockSession extends BaseSession {
             output += `\ninterface ${name}`;
             if (config.description) output += `\n description ${config.description}`;
             if (config.ip) output += `\n ip address ${config.ip} ${config.subnet}`;
-            if (config.shutdown) output += '\n shutdown';
+            if (config.adminShutdown) output += '\n shutdown';
             output += '\n!';
+        }
+
+        for (const route of this.routes) {
+            output += `\nip route ${route.network} ${route.mask} ${route.nextHop || route.outgoingInterface || 'null'}`;
         }
         return output;
     }
@@ -540,6 +596,82 @@ export class MockSession extends BaseSession {
             output += `${String(vlanId).padEnd(5)} default                          active    \n`;
         }
         return output;
+    }
+
+    private handleShowInterfaces(): string {
+        let output = '';
+        for (const [name, config] of this.interfaces.entries()) {
+            const status = config.adminShutdown ? 'administratively down' : 'up';
+            const proto = config.lineProtocolUp ? 'up' : 'down';
+            output += `${name} is ${status}, line protocol is ${proto}\n`;
+        }
+        return output.trim();
+    }
+
+    private handleShowInterfacesStatus(): string {
+        let output = 'Port      Name               Status       Vlan       Duplex  Speed Type\n';
+        for (const [name, config] of this.interfaces.entries()) {
+            const status = config.adminShutdown ? 'disabled' : (config.lineProtocolUp ? 'connected' : 'notconnect');
+            output += `${name.padEnd(9)} ${ (config.description || '').padEnd(18)} ${status.padEnd(12)} 1          auto    auto  10/100/1000BaseTX\n`;
+        }
+        return output.trim();
+    }
+
+    private handleShowIpRoute(): string {
+        let output = 'Codes: C - connected, S - static\n\n';
+        for (const route of this.routes) {
+            const code = route.connected ? 'C' : 'S';
+            const target = route.connected ? route.network : `${route.network} [1/0] via ${route.nextHop || route.outgoingInterface || ''}`;
+            output += `${code} ${target}\n`;
+        }
+        return output.trim();
+    }
+
+    private handleCopyRunningConfig(command: string): string {
+        if (this.state.currentMode !== 'PRIVILEGED_EXEC') {
+            return this.formatInvalidInput(command, 0);
+        }
+
+        this.backupSnapshot = this.cloneSnapshot();
+        this.pushRollbackSnapshot();
+        return 'Copy complete, 1584 bytes copied in 0.000 secs (0 bytes/sec)';
+    }
+
+    private handleConfigureReplace(command: string): string {
+        if (this.state.currentMode !== 'PRIVILEGED_EXEC') {
+            return this.formatInvalidInput(command, 0);
+        }
+
+        if (!this.backupSnapshot) {
+            return '% No backup configuration available.';
+        }
+
+        this.restoreSnapshot(this.backupSnapshot);
+        this.clearRollbackSnapshots();
+        return 'Configure replace completed successfully.';
+    }
+
+    private handleIpRouteCommand(command: string): string {
+        if (this.state.currentMode !== 'GLOBAL_CONFIG') {
+            return this.formatInvalidInput(command, 0);
+        }
+
+        const parts = command.trim().split(/\s+/);
+        if (parts.length < 5) {
+            return this.formatIncompleteCommand(command);
+        }
+
+        this.pushRollbackSnapshot();
+        const [, , network, mask, nextHop] = parts;
+        const route: RoutingEntry = {
+            network,
+            mask,
+            nextHop: nextHop || null,
+            outgoingInterface: null,
+            connected: false
+        };
+        this.routes.push(route);
+        return '';
     }
 
     private formatBadInterfaceParameter(command: string, intName: string): string {
@@ -569,5 +701,197 @@ export class MockSession extends BaseSession {
         }
 
         return null;
+    }
+
+    public hasSnapshots(): boolean {
+        return this.rollbackSnapshots.length > 0;
+    }
+
+    public restoreToInitialSnapshot(): boolean {
+        const snapshot = this.rollbackSnapshots[0];
+        if (!snapshot) {
+            return false;
+        }
+
+        this.restoreSnapshot(snapshot);
+        this.clearRollbackSnapshots();
+        return true;
+    }
+
+    public restoreBackupSnapshot(): boolean {
+        if (!this.backupSnapshot) {
+            return false;
+        }
+
+        this.restoreSnapshot(this.backupSnapshot);
+        this.clearRollbackSnapshots();
+        return true;
+    }
+
+    private pushRollbackSnapshot(): void {
+        this.rollbackSnapshots.push(this.cloneSnapshot());
+    }
+
+    private clearRollbackSnapshots(): void {
+        this.rollbackSnapshots = [];
+    }
+
+    private cloneSnapshot(): MockSnapshot {
+        return {
+            state: this.getState(),
+            interfaces: new Map(Array.from(this.interfaces.entries()).map(([name, config]) => [name, { ...config }])),
+            activeInterface: this.activeInterface,
+            vlans: new Set(this.vlans),
+            shellEnabled: this.shellEnabled,
+            shellVariables: new Map(this.shellVariables),
+            shellFunctions: new Map(this.shellFunctions),
+            routes: this.routes.map(route => ({ ...route }))
+        };
+    }
+
+    private restoreSnapshot(snapshot: MockSnapshot): void {
+        this.state = { ...snapshot.state };
+        this.interfaces = new Map(Array.from(snapshot.interfaces.entries()).map(([name, config]) => [name, { ...config }]));
+        this.activeInterface = snapshot.activeInterface;
+        this.vlans = new Set(snapshot.vlans);
+        this.shellEnabled = snapshot.shellEnabled;
+        this.shellVariables = new Map(snapshot.shellVariables);
+        this.shellFunctions = new Map(snapshot.shellFunctions);
+        this.routes = snapshot.routes.map(route => ({ ...route }));
+    }
+
+    private refreshConnectedRoutes(): void {
+        const connectedRoutes = new Map<string, RoutingEntry>();
+
+        for (const [name, config] of this.interfaces.entries()) {
+            if (config.ip && config.subnet) {
+                const network = this.computeNetworkAddress(config.ip, config.subnet);
+                const key = `${network}/${config.subnet}`;
+                connectedRoutes.set(key, {
+                    network,
+                    mask: config.subnet,
+                    nextHop: null,
+                    outgoingInterface: name,
+                    connected: true
+                });
+            }
+        }
+
+        const staticRoutes = this.routes.filter(route => !route.connected);
+        this.routes = [...connectedRoutes.values(), ...staticRoutes];
+    }
+
+    private isDestinationReachable(dest: string): boolean {
+        if (dest === '127.0.0.1' || dest === '8.8.8.8') {
+            return true;
+        }
+
+        for (const [name, config] of this.interfaces.entries()) {
+            if (!config.ip || !config.subnet || config.adminShutdown || !config.lineProtocolUp) {
+                continue;
+            }
+
+            if (config.ip === dest) {
+                return true;
+            }
+
+            if (this.isInSameSubnet(dest, config.ip, config.subnet)) {
+                return true;
+            }
+        }
+
+        for (const route of this.routes) {
+            if (route.connected) {
+                continue;
+            }
+            if (this.ipMatchesRoute(dest, route.network, route.mask)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private computeNetworkAddress(ip: string, mask: string): string {
+        const ipParts = this.ipToIntParts(ip);
+        const maskParts = this.ipToIntParts(mask);
+        return this.intPartsToIp(ipParts.map((octet, idx) => octet & maskParts[idx]));
+    }
+
+    private isInSameSubnet(ip: string, interfaceIp: string, mask: string): boolean {
+        return this.computeNetworkAddress(ip, mask) === this.computeNetworkAddress(interfaceIp, mask);
+    }
+
+    private ipMatchesRoute(ip: string, network: string, mask: string): boolean {
+        return this.computeNetworkAddress(ip, mask) === network;
+    }
+
+    private ipToIntParts(ip: string): number[] {
+        return ip.split('.').map(part => parseInt(part, 10));
+    }
+
+    private intPartsToIp(parts: number[]): string {
+        return parts.map(part => Math.max(0, Math.min(255, part))).join('.');
+    }
+
+    private async simulateLatency(command: string, timeoutMs?: number): Promise<void> {
+        const normalized = command.toLowerCase();
+        let delayMs = 0;
+
+        if (normalized.startsWith('copy ')) {
+            delayMs = 120;
+        } else if (normalized.startsWith('ping ')) {
+            delayMs = 45;
+        } else if (normalized.startsWith('show ')) {
+            delayMs = 20;
+        }
+
+        if (timeoutMs && delayMs > timeoutMs) {
+            await new Promise(resolve => setTimeout(resolve, timeoutMs));
+            return;
+        }
+
+        if (delayMs > 0) {
+            await new Promise(resolve => setTimeout(resolve, delayMs));
+        }
+    }
+
+    private substituteShellVariables(command: string): string {
+        let output = '';
+
+        for (let index = 0; index < command.length; index++) {
+            const char = command[index];
+            if (char !== '$') {
+                output += char;
+                continue;
+            }
+
+            const next = command[index + 1];
+            if (next === '{') {
+                const endBrace = command.indexOf('}', index + 2);
+                if (endBrace !== -1) {
+                    const name = command.slice(index + 2, endBrace);
+                    output += this.shellVariables.get(name) || '';
+                    index = endBrace;
+                    continue;
+                }
+            }
+
+            let nameEnd = index + 1;
+            while (nameEnd < command.length && /[A-Za-z0-9_]/.test(command[nameEnd])) {
+                nameEnd++;
+            }
+
+            if (nameEnd > index + 1) {
+                const name = command.slice(index + 1, nameEnd);
+                output += this.shellVariables.get(name) || '';
+                index = nameEnd - 1;
+                continue;
+            }
+
+            output += '$';
+        }
+
+        return output;
     }
 }

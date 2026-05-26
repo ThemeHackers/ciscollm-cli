@@ -2,6 +2,7 @@ import { MockSession } from '../src/infrastructure/protocols/MockSession';
 import { MultiAgentCoordinator } from '../src/core/agent/MultiAgentCoordinator';
 import { ErrorAnalyzer } from '../src/core/guardrails/ErrorAnalyzer';
 import { CiscoAgentLoop } from '../src/core/agent/AgentLoop';
+import { TransactionManager } from '../src/core/rollback/TransactionManager';
 import * as assert from 'assert';
 
 console.log('Running offline Cisco Switch simulation test suite...\n');
@@ -79,9 +80,16 @@ async function runSimulationTests() {
     assert.ok(pingSuccess.includes('!!!!!'), 'Ping output must indicate success');
     assert.ok(pingSuccess.includes('100 percent'), 'Ping success rate must be 100 percent');
 
+    const pingSubnetSuccess = await mockSwitch.execute('ping 10.0.1.2');
+    assert.ok(pingSubnetSuccess.includes('!!!!!'), 'Ping to a host on the connected subnet must succeed');
+    assert.ok(pingSubnetSuccess.includes('100 percent'), 'Subnet ping success rate must be 100 percent');
+
     const pingFail = await mockSwitch.execute('ping 10.0.2.2');
     assert.ok(pingFail.includes('.....'), 'Ping output must indicate packet loss');
     assert.ok(pingFail.includes('0 percent'), 'Ping success rate must be 0 percent');
+
+    const routeTable = await mockSwitch.execute('show ip route');
+    assert.ok(routeTable.includes('C 10.0.1.0'), 'Route table must include the connected subnet');
     console.log(' -> Ping and verification test passed.');
 
 
@@ -123,6 +131,25 @@ async function runSimulationTests() {
     assert.ok(funcListOut.includes('hello_func() { echo hello; }'), 'Show functions must list defined functions');
     
     console.log(' -> IOS Shell simulation passed.');
+
+    console.log('\n[Test 7b]: Simulating transaction rollback via mock snapshots...');
+    const transactionManager = new TransactionManager();
+    await transactionManager.initializeBackup(mockSwitch);
+
+    await mockSwitch.execute('end');
+    await mockSwitch.execute('enable');
+    await mockSwitch.execute('configure terminal');
+    await mockSwitch.execute('interface gigabitEthernet0/1');
+    await mockSwitch.execute('ip address 10.0.9.1 255.255.255.0');
+    await mockSwitch.execute('no shutdown');
+    await mockSwitch.execute('end');
+
+    const rollbackOutput = await transactionManager.executeRollback(mockSwitch);
+    assert.ok(rollbackOutput.includes('Mock backup restore completed successfully'), 'Rollback should use backup snapshot restore on mock sessions');
+
+    const postRollbackBrief = await mockSwitch.execute('show ip interface brief');
+    assert.ok(!postRollbackBrief.includes('10.0.9.1'), 'Rollback must remove the temporary address change');
+    console.log(' -> Transaction rollback simulation passed.');
 
     console.log('\n[Test 7]: Simulating Agent Loop Tool Call handlers...');
     const agent = new CiscoAgentLoop(null as any, coordinator);

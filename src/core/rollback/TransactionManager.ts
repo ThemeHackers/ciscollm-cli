@@ -72,6 +72,24 @@ export class TransactionManager {
     
     public async executeRollback(session: BaseSession): Promise<string> {
         console.warn('[TransactionManager]: Safety rollback triggered!');
+
+        const snapshotCapableSession = session as BaseSession & {
+            hasSnapshots?: () => boolean;
+            restoreBackupSnapshot?: () => boolean;
+            restoreToInitialSnapshot?: () => boolean;
+        };
+
+        if (snapshotCapableSession.restoreBackupSnapshot?.()) {
+            console.log('[TransactionManager]: Mock backup restore completed successfully.');
+            this.clear();
+            return 'Mock backup restore completed successfully.';
+        }
+
+        if (snapshotCapableSession.hasSnapshots?.() && snapshotCapableSession.restoreToInitialSnapshot?.()) {
+            console.log('[TransactionManager]: Mock snapshot restore completed successfully.');
+            this.clear();
+            return 'Mock snapshot restore completed successfully.';
+        }
         
         if (this.backupCreated) {
             try {
