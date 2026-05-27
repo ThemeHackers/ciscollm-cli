@@ -87,6 +87,7 @@ program
     .option('--endpoint <url>', 'Ollama/compatibility API server endpoint')
     .option('--strict-command-ref', 'Enable strict command validation against cf_command_ref.pdf index')
     .option('--no-ref-telemetry', 'Disable command-reference telemetry logs during startup')
+    .option('--non-interactive', 'Disable interactive human-in-the-loop prompts (automatically reject dangerous commands)')
     
     .option('-g, --goal <intent>', 'The execution goal for the agent to achieve')
     .action(async (options) => {
@@ -105,6 +106,11 @@ program
         let goal = options.goal;
         let strictCommandRef = options.strictCommandRef === true;
         let refTelemetry = options.refTelemetry !== false;
+        let nonInteractive = options.nonInteractive === true;
+
+        if (nonInteractive) {
+            process.env.CISCOLLM_NON_INTERACTIVE = 'true';
+        }
 
         
         if (!goal) {

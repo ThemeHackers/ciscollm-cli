@@ -13,7 +13,30 @@ export class CommandFirewall {
     public checkCommand(command: string, currentInterfaceContext: string | null): { dangerous: boolean; reason?: string } {
         const normalized = command.toLowerCase().trim();
 
-        
+       
+        if (normalized.startsWith('no ip route 0.0.0.0') || normalized.startsWith('no ip route 0.0.0.0 0.0.0.0')) {
+            return {
+                dangerous: true,
+                reason: 'Attempting to remove the default static route (0.0.0.0/0) which may sever SSH/telnet connectivity.'
+            };
+        }
+
+      
+        if (normalized.startsWith('no aaa new-model') || normalized.startsWith('crypto key zeroize')) {
+            return {
+                dangerous: true,
+                reason: 'Attempting to disable AAA security or zeroize crypto keys, which can lock out admin access.'
+            };
+        }
+
+       
+        if (normalized.startsWith('no access-list') || normalized.startsWith('no ip access-group')) {
+            return {
+                dangerous: true,
+                reason: 'Attempting to remove or disable an access-list which could expose or lock the management interface.'
+            };
+        }
+
         const matchedDestructive = DESTRUCTIVE_TOKENS.find(token => 
             normalized.startsWith(token) || normalized.includes(` ${token}`)
         );
@@ -24,7 +47,6 @@ export class CommandFirewall {
             };
         }
 
-        
         const interfaceMatch = /^interface\s+([A-Za-z0-9\/\.\-]+)/i.exec(command.trim());
         if (interfaceMatch) {
             const targetedInterface = interfaceMatch[1].toLowerCase().trim();
@@ -37,7 +59,6 @@ export class CommandFirewall {
             }
         }
 
-        
         if (currentInterfaceContext) {
             const activeIntf = currentInterfaceContext.toLowerCase().trim();
             if (this.isProtected(activeIntf)) {
@@ -60,7 +81,6 @@ export class CommandFirewall {
     }
 
     private isProtected(interfaceName: string): boolean {
-        
         return this.protectedInterfaces.some(p => 
             p === interfaceName || 
             interfaceName.startsWith(p) || 
@@ -68,8 +88,14 @@ export class CommandFirewall {
         );
     }
 
-    
     public async verifyWithHuman(command: string, reason: string): Promise<boolean> {
+        const isNonInteractive = process.env.CISCOLLM_NON_INTERACTIVE === 'true';
+        if (isNonInteractive) {
+            console.warn('\n' + chalk.bold.red(`⚠️  [GUARDRAIL BLOCK]: Non-interactive mode active. Automatically rejecting high-risk command: "${command}"`));
+            console.warn(`- Protection Rule Match:      ${chalk.cyan(reason)}\n`);
+            return false;
+        }
+
         const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
         
         return new Promise((resolve) => {

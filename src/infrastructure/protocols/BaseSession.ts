@@ -24,7 +24,7 @@ export abstract class BaseSession {
             this.state.currentMode = 'USER_EXEC';
         } else if (target.endsWith('config-if)#')) {
             this.state.currentMode = 'INTERFACE_CONFIG';
-        } else if (target.endsWith('config)#')) {
+        } else if (target.endsWith('config)#') || target.endsWith(')#')) {
             this.state.currentMode = 'GLOBAL_CONFIG';
         } else if (target.endsWith('#')) {
             this.state.currentMode = 'PRIVILEGED_EXEC';

@@ -1,5 +1,7 @@
 import { BaseSession } from './BaseSession';
 import { CiscoDeviceMode } from '../../shared/types';
+import * as fs from 'fs';
+import * as path from 'path';
 
 interface InterfaceConfig {
     ip: string | null;
@@ -42,6 +44,47 @@ export class MockSession extends BaseSession {
     private rollbackSnapshots: MockSnapshot[] = [];
     private readonly commandPatterns: Array<{ pattern: CommandTokenPattern; action: (command: string, lower: string) => string | null }>;
 
+    private getStateFilePath(): string {
+        return path.resolve(process.cwd(), `.mock-state-${this.deviceId.toLowerCase().replace(/[^a-z0-9]/g, '_')}.json`);
+    }
+
+    private saveState(): void {
+        if (process.env.NODE_ENV === 'test') return;
+        try {
+            const data = {
+                interfaces: Array.from(this.interfaces.entries()),
+                vlans: Array.from(this.vlans),
+                shellVariables: Array.from(this.shellVariables.entries()),
+                shellFunctions: Array.from(this.shellFunctions.entries()),
+                routes: this.routes,
+                state: this.state,
+                activeInterface: this.activeInterface
+            };
+            fs.writeFileSync(this.getStateFilePath(), JSON.stringify(data, null, 2), 'utf8');
+        } catch (e) {
+          
+        }
+    }
+
+    private loadState(): void {
+        if (process.env.NODE_ENV === 'test') return;
+        try {
+            const filePath = this.getStateFilePath();
+            if (fs.existsSync(filePath)) {
+                const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+                this.interfaces = new Map(data.interfaces);
+                this.vlans = new Set(data.vlans);
+                this.shellVariables = new Map(data.shellVariables);
+                this.shellFunctions = new Map(data.shellFunctions);
+                this.routes = data.routes;
+                this.state = data.state;
+                this.activeInterface = data.activeInterface;
+            }
+        } catch (e) {
+           
+        }
+    }
+
     constructor(private deviceId: string = 'Switch') {
         super();
         this.state = {
@@ -73,6 +116,7 @@ export class MockSession extends BaseSession {
             description: null
         });
         this.refreshConnectedRoutes();
+        this.loadState();
 
         this.commandPatterns = [
             { pattern: ['configure', 'terminal'], action: () => this.transitionToGlobalConfig('Enter configuration commands, one per line.  End with CNTL/Z.') },
@@ -102,7 +146,24 @@ export class MockSession extends BaseSession {
             { pattern: ['show', 'vlan', 'brief'], action: () => this.handleShowVlanBrief() },
             { pattern: ['show', 'interfaces'], action: () => this.handleShowInterfaces() },
             { pattern: ['show', 'interfaces', 'status'], action: () => this.handleShowInterfacesStatus() },
-            { pattern: ['show', 'interfaces', 'brief'], action: () => this.handleShowInterfacesStatus() }
+            { pattern: ['show', 'interfaces', 'brief'], action: () => this.handleShowInterfacesStatus() },
+            { pattern: ['dir', 'flash:'], action: () => this.handleDirFlash() },
+            { pattern: ['dir'], action: () => this.handleDirFlash() },
+            { pattern: ['router', 'ospf'], action: (command) => this.handleRouterOspf(command) },
+            { pattern: ['network'], action: () => '' },
+            { pattern: ['ip', 'ospf'], action: () => '' },
+            { pattern: ['ip', 'dhcp', 'pool'], action: (command) => this.handleIpDhcpPool(command) },
+            { pattern: ['default-router'], action: () => '' },
+            { pattern: ['dns-server'], action: () => '' },
+            { pattern: ['ip', 'dhcp', 'excluded-address'], action: () => '' },
+            { pattern: ['access-list'], action: () => '' },
+            { pattern: ['ip', 'access-list'], action: () => '' },
+            { pattern: ['ip', 'access-group'], action: () => '' },
+            { pattern: ['permit'], action: () => '' },
+            { pattern: ['deny'], action: () => '' },
+            { pattern: ['ip', 'nat', 'inside', 'source'], action: () => '' },
+            { pattern: ['ip', 'nat', 'inside'], action: () => '' },
+            { pattern: ['ip', 'nat', 'outside'], action: () => '' }
         ];
     }
 
@@ -116,6 +177,12 @@ export class MockSession extends BaseSession {
     }
 
     public async execute(command: string, timeoutMs?: number): Promise<string> {
+        const result = await this.executeInternal(command, timeoutMs);
+        this.saveState();
+        return result;
+    }
+
+    public async executeInternal(command: string, timeoutMs?: number): Promise<string> {
         let clean = command.trim();
         let lower = clean.toLowerCase();
 
@@ -462,6 +529,10 @@ export class MockSession extends BaseSession {
     }
 
     private handleExitCommand(): string {
+        if (this.state.prompt.includes('(config-router)') || this.state.prompt.includes('(dhcp-config)')) {
+            this.updateMode('GLOBAL_CONFIG');
+            return '';
+        }
         if (this.state.currentMode === 'INTERFACE_CONFIG') {
             this.activeInterface = null;
             this.updateMode('GLOBAL_CONFIG');
@@ -479,7 +550,7 @@ export class MockSession extends BaseSession {
     }
 
     private handleEndCommand(): string {
-        if (this.state.currentMode === 'GLOBAL_CONFIG' || this.state.currentMode === 'INTERFACE_CONFIG') {
+        if (this.state.currentMode === 'GLOBAL_CONFIG' || this.state.currentMode === 'INTERFACE_CONFIG' || this.state.prompt.includes(')')) {
             this.activeInterface = null;
             this.updateMode('PRIVILEGED_EXEC');
             return '';
@@ -893,5 +964,31 @@ export class MockSession extends BaseSession {
         }
 
         return output;
+    }
+
+    private handleDirFlash(): string {
+        return `Directory of flash:/
+
+    1  -rw-     1584  May 27 2026 10:30:00 +00:00  backup-agent.cfg
+
+15728640 bytes total (15727056 bytes free)`;
+    }
+
+    private handleRouterOspf(command: string): string {
+        if (this.state.currentMode !== 'GLOBAL_CONFIG') {
+            return '% Command rejected: Place in Global Config mode first.';
+        }
+        this.updateMode('GLOBAL_CONFIG');
+        this.state.prompt = `${this.state.hostname}(config-router)#`;
+        return '';
+    }
+
+    private handleIpDhcpPool(command: string): string {
+        if (this.state.currentMode !== 'GLOBAL_CONFIG') {
+            return '% Command rejected: Place in Global Config mode first.';
+        }
+        this.updateMode('GLOBAL_CONFIG');
+        this.state.prompt = `${this.state.hostname}(dhcp-config)#`;
+        return '';
     }
 }

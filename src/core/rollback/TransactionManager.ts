@@ -2,14 +2,14 @@ import { BaseSession } from '../../infrastructure/protocols/BaseSession';
 
 export class TransactionManager {
     private configChangeLog: string[] = [];
+    private mutationsWithContext: Array<{ command: string; contextStack: string[] }> = [];
+    private contextStack: string[] = [];
     private targetInterface: string | null = null;
     private backupCreated = false;
     private readonly backupFilename = 'flash:backup-agent.cfg';
 
-    
     public async initializeBackup(session: BaseSession): Promise<void> {
         const state = session.getState();
-        
         
         if (state.currentMode === 'USER_EXEC') {
             console.log('[TransactionManager]: Elevating to privileged mode for backup...');
@@ -17,11 +17,15 @@ export class TransactionManager {
         }
 
         try {
+            console.log('[TransactionManager]: Checking flash storage reachability...');
+            const flashCheck = await session.execute('dir flash:');
+            if (flashCheck.includes('% Invalid') || flashCheck.includes('No such file') || flashCheck.includes('Error')) {
+                console.warn('[TransactionManager Warning]: Flash storage is not accessible or not found. Skipping backup creation.');
+                return;
+            }
+
             console.log('[TransactionManager]: Creating device running-config backup on flash...');
-            
-            
             const rawOutput = await session.execute(`copy running-config ${this.backupFilename}`);
-            
             
             if (rawOutput.includes('Destination filename') || rawOutput.includes('?')) {
                 const confirmOutput = await session.execute('');
@@ -42,18 +46,52 @@ export class TransactionManager {
         }
     }
 
-    
     public trackMutation(command: string): void {
-        const cleanCmd = command.trim();
-        
-        
-        const interfaceMatch = /^interface\s+([A-Za-z0-9\/\.\-]+)/i.exec(cleanCmd);
-        if (interfaceMatch) {
-            this.targetInterface = interfaceMatch[1];
+        const clean = command.trim();
+        const lower = clean.toLowerCase();
+
+     
+        if (lower.startsWith('interface ') || lower.startsWith('int ')) {
+            const parts = clean.split(/\s+/);
+            if (parts.length >= 2) {
+                if (this.contextStack.length > 0 && this.contextStack[this.contextStack.length - 1].startsWith('interface')) {
+                    this.contextStack.pop();
+                }
+                this.contextStack.push(`interface ${parts[1]}`);
+                this.targetInterface = parts[1];
+            }
+        } else if (lower.startsWith('router ')) {
+            if (this.contextStack.length > 0 && this.contextStack[this.contextStack.length - 1].startsWith('router')) {
+                this.contextStack.pop();
+            }
+            this.contextStack.push(clean);
+        } else if (lower.startsWith('line ')) {
+            if (this.contextStack.length > 0 && this.contextStack[this.contextStack.length - 1].startsWith('line')) {
+                this.contextStack.pop();
+            }
+            this.contextStack.push(clean);
+        } else if (lower.startsWith('vlan ') && !lower.startsWith('no vlan ')) {
+            if (this.contextStack.length > 0 && this.contextStack[this.contextStack.length - 1].startsWith('vlan')) {
+                this.contextStack.pop();
+            }
+            this.contextStack.push(clean);
+        } else if (lower === 'exit') {
+            this.contextStack.pop();
+            if (this.contextStack.length === 0 || !this.contextStack[this.contextStack.length - 1].startsWith('interface')) {
+                this.targetInterface = null;
+            }
+        } else if (lower === 'end') {
+            this.contextStack = [];
+            this.targetInterface = null;
         }
-        
-        if (this.isMutational(cleanCmd)) {
-            this.configChangeLog.push(cleanCmd);
+
+      
+        if (this.isMutational(clean)) {
+            this.configChangeLog.push(clean);
+            this.mutationsWithContext.push({
+                command: clean,
+                contextStack: [...this.contextStack]
+            });
         }
     }
 
@@ -66,10 +104,13 @@ export class TransactionManager {
                !lower.startsWith('configure terminal') &&
                !lower.startsWith('conf t') &&
                !lower.startsWith('copy') &&
-               !lower.startsWith('interface');
+               !lower.startsWith('interface') &&
+               !lower.startsWith('int ') &&
+               !lower.startsWith('router ') &&
+               !lower.startsWith('line ') &&
+               !lower.startsWith('vlan ');
     }
 
-    
     public async executeRollback(session: BaseSession): Promise<string> {
         console.warn('[TransactionManager]: Safety rollback triggered!');
 
@@ -95,7 +136,6 @@ export class TransactionManager {
             try {
                 console.warn(`[TransactionManager]: Restoring running configuration atomically using ${this.backupFilename}...`);
                 
-                
                 const state = session.getState();
                 if (state.currentMode === 'USER_EXEC') {
                     await session.execute('enable');
@@ -115,46 +155,55 @@ export class TransactionManager {
             }
         }
 
-        
-        console.warn(`[TransactionManager]: Executing manual inversion for ${this.configChangeLog.length} mutations...`);
+        console.warn(`[TransactionManager]: Executing manual inversion for ${this.mutationsWithContext.length} mutations...`);
         let rollbackSequence: string[] = ['configure terminal'];
+        let currentRollbackContext: string[] = [];
 
-        if (this.targetInterface) {
-            rollbackSequence.push(`interface ${this.targetInterface}`);
-            
-            
-            for (const cmd of [...this.configChangeLog].reverse()) {
-                const clean = cmd.trim();
-                const lower = clean.toLowerCase();
-                
-                if (lower.startsWith('ip address') || lower.startsWith('ip add')) {
-                    rollbackSequence.push('no ip address');
-                } else if (lower.startsWith('shutdown')) {
-                    rollbackSequence.push('no shutdown');
-                } else if (lower.startsWith('no shutdown')) {
-                    rollbackSequence.push('shutdown');
-                } else if (lower.startsWith('description')) {
-                    rollbackSequence.push('no description');
-                } else {
-                    
-                    if (lower.startsWith('no ')) {
-                        rollbackSequence.push(clean.substring(3));
-                    } else {
-                        rollbackSequence.push(`no ${clean}`);
+        for (const item of [...this.mutationsWithContext].reverse()) {
+            const targetStack = item.contextStack;
+
+
+            let needsReentry = false;
+            if (currentRollbackContext.length !== targetStack.length) {
+                needsReentry = true;
+            } else {
+                for (let i = 0; i < targetStack.length; i++) {
+                    if (currentRollbackContext[i] !== targetStack[i]) {
+                        needsReentry = true;
+                        break;
                     }
                 }
             }
-        } else {
-            
-            for (const cmd of [...this.configChangeLog].reverse()) {
-                const clean = cmd.trim();
-                const lower = clean.toLowerCase();
-                if (lower.startsWith('no ')) {
-                    rollbackSequence.push(clean.substring(3));
-                } else {
-                    rollbackSequence.push(`no ${clean}`);
+
+            if (needsReentry) {
+                if (currentRollbackContext.length > 0) {
+                    rollbackSequence.push('exit');
                 }
+                for (const submode of targetStack) {
+                    rollbackSequence.push(submode);
+                }
+                currentRollbackContext = [...targetStack];
             }
+
+            const clean = item.command;
+            const lower = clean.toLowerCase();
+            let inverseCmd = '';
+
+            if (lower.startsWith('ip address') || lower.startsWith('ip add')) {
+                inverseCmd = 'no ip address';
+            } else if (lower.startsWith('shutdown')) {
+                inverseCmd = 'no shutdown';
+            } else if (lower.startsWith('no shutdown')) {
+                inverseCmd = 'shutdown';
+            } else if (lower.startsWith('description')) {
+                inverseCmd = 'no description';
+            } else if (lower.startsWith('no ')) {
+                inverseCmd = clean.substring(3);
+            } else {
+                inverseCmd = `no ${clean}`;
+            }
+
+            rollbackSequence.push(inverseCmd);
         }
         
         rollbackSequence.push('end');
@@ -171,10 +220,12 @@ export class TransactionManager {
 
     public clear(): void {
         this.configChangeLog = [];
+        this.mutationsWithContext = [];
+        this.contextStack = [];
         this.targetInterface = null;
     }
 
     public hasMutations(): boolean {
-        return this.configChangeLog.length > 0;
+        return this.configChangeLog.length > 0 || this.mutationsWithContext.length > 0;
     }
 }

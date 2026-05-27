@@ -1,3 +1,4 @@
+process.env.NODE_ENV = 'test';
 import { CommandFirewall } from '../src/core/guardrails/CommandFirewall';
 import { ErrorAnalyzer } from '../src/core/guardrails/ErrorAnalyzer';
 import { TransactionManager } from '../src/core/rollback/TransactionManager';

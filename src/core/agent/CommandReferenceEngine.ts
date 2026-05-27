@@ -190,7 +190,8 @@ export class CommandReferenceEngine {
             };
         }
 
-        const normalizedInput = this.normalizeCommand(clean);
+        const expandedInput = this.expandCommand(clean);
+        const normalizedInput = this.normalizeCommand(expandedInput);
         const exact = this.commands.find(c => this.normalizeCommand(c.command) === normalizedInput);
         if (exact) {
             return {
@@ -200,8 +201,8 @@ export class CommandReferenceEngine {
             };
         }
 
-        const best = this.search(clean, 5).map(c => c.command);
-        const allowedByPrefix = this.commands.some(c => this.isLikelySameCommandFamily(clean, c.command));
+        const best = this.search(expandedInput, 5).map(c => c.command);
+        const allowedByPrefix = this.commands.some(c => this.isLikelySameCommandFamily(expandedInput, c.command));
         if (allowedByPrefix) {
             return {
                 allowed: true,
@@ -212,7 +213,7 @@ export class CommandReferenceEngine {
 
         return {
             allowed: false,
-            reason: `Command "${clean}" was not found in cf_command_ref.pdf index.`,
+            reason: `Command "${clean}" (expanded to "${expandedInput}") was not found in cf_command_ref.pdf index.`,
             suggestions: best
         };
     }
@@ -432,5 +433,74 @@ export class CommandReferenceEngine {
         }
 
         return true;
+    }
+
+    public expandCommand(command: string): string {
+        const tokens = command.trim().split(/\s+/).filter(Boolean);
+        if (tokens.length === 0) return command;
+
+        const expanded: string[] = [];
+
+        for (let i = 0; i < tokens.length; i++) {
+            const token = tokens[i].toLowerCase();
+            let exp = tokens[i]; 
+
+            if (token === 'sh') {
+                exp = 'show';
+            } else if (token === 'conf') {
+                exp = 'configure';
+            } else if (token === 't' && i > 0 && (tokens[i - 1].toLowerCase() === 'conf' || tokens[i - 1].toLowerCase() === 'configure')) {
+                exp = 'terminal';
+            } else if (token === 'int') {
+                exp = 'interface';
+            } else if (token === 'add' && i > 0 && tokens[i - 1].toLowerCase() === 'ip') {
+                exp = 'address';
+            } else if (token === 'run' && i > 0 && (tokens[i - 1].toLowerCase() === 'show' || tokens[i - 1].toLowerCase() === 'sh')) {
+                exp = 'running-config';
+            } else if (token === 'br' && i > 0) {
+                exp = 'brief';
+            }
+
+           
+            if (i > 0 && (tokens[i - 1].toLowerCase() === 'interface' || tokens[i - 1].toLowerCase() === 'int')) {
+                const resolved = this.resolveInterfaceName(tokens[i]);
+                if (resolved) exp = resolved;
+            } else {
+                const resolved = this.resolveInterfaceName(tokens[i]);
+                if (resolved) exp = resolved;
+            }
+
+            expanded.push(exp);
+        }
+
+        let cmd = expanded.join(' ');
+        const lower = cmd.toLowerCase();
+        if (lower === 'no sh') {
+            return 'no shutdown';
+        }
+
+        return cmd;
+    }
+
+    private resolveInterfaceName(intName: string): string | null {
+        const lowerName = intName.toLowerCase();
+        const aliases = [
+            { canonical: 'GigabitEthernet', aliases: ['gigabitethernet', 'gig', 'gi'] },
+            { canonical: 'FastEthernet', aliases: ['fastethernet', 'fa'] },
+            { canonical: 'Loopback', aliases: ['loopback', 'lo'] },
+            { canonical: 'Vlan', aliases: ['vlan', 'vl'] }
+        ];
+
+        for (const entry of aliases) {
+            for (const alias of entry.aliases) {
+                if (lowerName.startsWith(alias)) {
+                    const suffix = intName.substring(alias.length);
+                    if (suffix === '' || /^[0-9]/.test(suffix)) {
+                        return `${entry.canonical}${suffix}`;
+                    }
+                }
+            }
+        }
+        return null;
     }
 }
