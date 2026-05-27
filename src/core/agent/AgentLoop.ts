@@ -27,6 +27,8 @@ export class CiscoAgentLoop {
     private referenceTelemetry = true;
     private options: AgentLoopOptions;
     private validationNudgeCount = 0;
+    private lastTopologyDiscoveryAt = 0;
+    private readonly topologyRefreshIntervalMs = 15000;
 
     constructor(
         private llmClient: LLMClient,
@@ -86,11 +88,12 @@ export class CiscoAgentLoop {
         }
 
         const stateInfo = this.buildStateInfoString();
+        const topologyInfo = await this.buildTopologyInfoString();
 
         
         this.messages.push({
             role: 'system',
-            content: PromptEngine.getSystemPrompt(stateInfo, this.commandHints, this.strictReferenceMode)
+            content: PromptEngine.getSystemPrompt(stateInfo, this.commandHints, this.strictReferenceMode, topologyInfo)
         });
         
         this.messages.push({ role: 'user', content: userGoal });
@@ -104,9 +107,10 @@ export class CiscoAgentLoop {
             
             
             const updatedStateInfo = this.buildStateInfoString();
+            const updatedTopologyInfo = await this.buildTopologyInfoString();
             this.messages[0] = {
                 role: 'system',
-                content: PromptEngine.getSystemPrompt(updatedStateInfo, this.commandHints, this.strictReferenceMode)
+                content: PromptEngine.getSystemPrompt(updatedStateInfo, this.commandHints, this.strictReferenceMode, updatedTopologyInfo)
             };
 
         
@@ -195,6 +199,23 @@ export class CiscoAgentLoop {
         if (executionDepth >= MAX_STEPS && dynamicLoopActive) {
             logger.warn('Maximum loop steps limit reached.');
         }
+    }
+
+    private async buildTopologyInfoString(): Promise<string> {
+        const now = Date.now();
+        if (now - this.lastTopologyDiscoveryAt > this.topologyRefreshIntervalMs) {
+            await this.coordinator.discoverTopology();
+            this.lastTopologyDiscoveryAt = now;
+        }
+        const topology = this.coordinator.getTopology();
+        if (topology.links.length === 0) {
+            return `Discovered at: ${topology.discoveredAt}\nNodes: ${topology.nodes.join(', ') || '(none)'}\nLinks: none`; 
+        }
+
+        const links = topology.links
+            .map(link => `- ${link.localDeviceId} [${link.localInterface}] <-> ${link.remoteDeviceId} [${link.remoteInterface}] via ${link.protocol.toUpperCase()}`)
+            .join('\n');
+        return `Discovered at: ${topology.discoveredAt}\nNodes: ${topology.nodes.join(', ')}\n${links}`;
     }
 
     private async triggerAutomaticValidationPing(deviceId: string): Promise<void> {

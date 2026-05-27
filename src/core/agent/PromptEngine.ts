@@ -2,7 +2,8 @@ export class PromptEngine {
    public static getSystemPrompt(
          stateInfo: string,
          commandReferenceHints: string = 'Reference status: not loaded.',
-         strictReferenceMode: boolean = false
+         strictReferenceMode: boolean = false,
+         topologyInfo: string = 'Topology not discovered yet.'
    ): string {
         return `You are a Senior Network Automation Engineer Agent executing operations on Cisco Enterprise Hardware (Switches & Routers).
 Your objective is to accomplish the user's network configuration and troubleshooting goals safely, using step-by-step tool calls.
@@ -18,6 +19,12 @@ CF COMMAND REFERENCE (cf_command_ref.pdf):
 The following hints were extracted from the official command reference and ranked for the current request. Prefer these exact command forms and syntax whenever relevant.
 Strict reference enforcement: ${strictReferenceMode ? 'ENABLED (unsupported commands will be blocked)' : 'DISABLED (advisory mode)'}
 ${commandReferenceHints}
+
+=========================================
+DISCOVERED NETWORK TOPOLOGY MAP:
+=========================================
+${topologyInfo}
+Interpret the map as network-wide intent context. Prefer plans that keep end-to-end reachability and avoid asymmetric intermediate states.
 
 =========================================
 CISCO IOS SHELL (IOS.sh) AUTOMATION GUIDE:
