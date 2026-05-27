@@ -5,6 +5,9 @@ import { TransactionManager } from '../src/core/rollback/TransactionManager';
 import { CiscoAgentLoop } from '../src/core/agent/AgentLoop';
 import { LLMClient } from '../src/infrastructure/llm/LLMClient';
 import { MultiAgentCoordinator } from '../src/core/agent/MultiAgentCoordinator';
+import { HierarchicalAgentManager } from '../src/core/agent/HierarchicalAgentManager';
+import { PreExecutionValidator } from '../src/core/guardrails/PreExecutionValidator';
+import { StateDiff } from '../src/core/rollback/StateDiff';
 import * as assert from 'assert';
 
 console.log('Running ciscollm-cli Unit Tests...\n');
@@ -100,7 +103,7 @@ txManager.executeRollback(mockSession).then(() => {
 console.log('\n[Test 4]: Evaluating LLMClient Options...');
 const clientLocal = new LLMClient('local');
 assert.strictEqual((clientLocal as any).provider, 'local');
-assert.strictEqual((clientLocal as any).modelName, 'qwen3.5-4b');
+assert.strictEqual((clientLocal as any).modelName, 'qwen3.5:4b');
 
 const clientCloud = new LLMClient('cloud', 'https://custom-url/v1', 'nvidia/nemotron-3-super-120b-a12b:free', 'test-key');
 assert.strictEqual((clientCloud as any).provider, 'cloud');
@@ -135,5 +138,63 @@ const lines = truncated.split('\n');
 assert.strictEqual(lines.length, 41, 'Truncated output should have exactly 41 lines');
 assert.ok(truncated.includes('TRUNCATED 60 LINES'), 'Should specify correct number of removed lines');
 console.log(' -> AgentLoop Truncation test passed.');
+
+console.log('\n[Test 7]: Evaluating HierarchicalAgentManager...');
+const role1 = HierarchicalAgentManager.routeCommand('ip route 0.0.0.0 0.0.0.0 10.0.0.1');
+assert.strictEqual(role1, 'CORE', 'Static route should be routed to CORE agent');
+const role2 = HierarchicalAgentManager.routeCommand('vlan 10');
+assert.strictEqual(role2, 'DISTRIBUTION', 'VLAN commands should be routed to DISTRIBUTION agent');
+const role3 = HierarchicalAgentManager.routeCommand('interface GigabitEthernet0/1');
+assert.strictEqual(role3, 'ACCESS', 'Interface commands should be routed to ACCESS agent');
+console.log(' -> HierarchicalAgentManager test passed.');
+
+console.log('\n[Test 8]: Evaluating PreExecutionValidator...');
+const mockTopology = {
+    devices: [{ id: 'Switch1', type: 'switch' as any, interfaces: [] }, { id: 'Router1', type: 'router' as any, interfaces: [] }],
+    links: [{
+        id: 'link1',
+        localDeviceId: 'Switch1',
+        localInterface: 'GigabitEthernet0/1',
+        remoteDeviceId: 'Router1',
+        remoteInterface: 'GigabitEthernet0/1',
+        protocol: 'lldp'
+    }]
+} as any;
+const val1 = PreExecutionValidator.validateCommand('no ip route 0.0.0.0', 'Router1', mockTopology, null);
+assert.strictEqual(val1.safe, false, 'Default route deletion should be flagged unsafe');
+assert.strictEqual(val1.warnLevel, 'CRITICAL', 'Default route deletion warning should be CRITICAL');
+
+const val2 = PreExecutionValidator.validateCommand('shutdown', 'Switch1', mockTopology, 'GigabitEthernet0/1');
+assert.strictEqual(val2.safe, false, 'Shutting down active link should be flagged unsafe');
+assert.strictEqual(val2.warnLevel, 'CRITICAL', 'Warning should be CRITICAL');
+console.log(' -> PreExecutionValidator test passed.');
+
+console.log('\n[Test 9]: Evaluating StateDiff...');
+const beforeSnap = {
+    deviceId: 'Router1',
+    timestamp: '2026-05-27T00:00:00Z',
+    sessionState: { currentMode: 'PRIVILEGED_EXEC' as any, hostname: 'Router1', prompt: 'Router1#' },
+    interfaces: [
+        { name: 'GigabitEthernet0/1', ip: '10.0.0.1', subnet: '255.255.255.0', adminShutdown: false, lineProtocolUp: true, description: 'Uplink' }
+    ],
+    routes: [],
+    vlans: [1]
+};
+const afterSnap = {
+    deviceId: 'Router1',
+    timestamp: '2026-05-27T00:01:00Z',
+    sessionState: { currentMode: 'PRIVILEGED_EXEC' as any, hostname: 'Router-Main', prompt: 'Router-Main#' },
+    interfaces: [
+        { name: 'GigabitEthernet0/1', ip: '10.0.0.2', subnet: '255.255.255.0', adminShutdown: false, lineProtocolUp: true, description: 'Uplink to Core' }
+    ],
+    routes: [{ network: '192.168.1.0', mask: '255.255.255.0', nextHop: '10.0.0.10' }],
+    vlans: [1, 10]
+};
+const diff = StateDiff.diff(beforeSnap, afterSnap);
+assert.ok(diff.hostnameChanged, 'Hostname changes should be caught');
+assert.strictEqual(diff.hostnameChanged.after, 'Router-Main');
+assert.strictEqual(diff.addedVlans.includes(10), true, 'VLAN 10 addition should be caught');
+assert.strictEqual(diff.addedRoutes.length, 1, 'Static route addition should be caught');
+console.log(' -> StateDiff test passed.');
 
 console.log('\nAll Unit Tests Finished Successfully!');

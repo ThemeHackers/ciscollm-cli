@@ -24,7 +24,7 @@ export class LLMClient {
             this.modelName = modelName || 'nvidia/nemotron-3-super-120b-a12b:free';
         } else {
             this.endpoint = endpoint || 'http://127.0.0.1:11434/v1';
-            this.modelName = modelName || 'qwen3.5-4b';
+            this.modelName = modelName || 'qwen3.5:4b';
         }
     }
 

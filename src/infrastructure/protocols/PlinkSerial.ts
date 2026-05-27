@@ -3,6 +3,8 @@ import { BaseSession } from './BaseSession';
 import { EventEmitter } from 'events';
 import { PROMPT_REGEX, MORE_REGEX } from '../../shared/constants';
 import chalk from 'chalk';
+import * as path from 'path';
+import * as fs from 'fs';
 
 export class PlinkSerialSession extends BaseSession {
     private process: ChildProcessWithoutNullStreams | null = null;
@@ -18,11 +20,41 @@ export class PlinkSerialSession extends BaseSession {
 
     public async connect(): Promise<void> {
         return new Promise((resolve, reject) => {
-            const args = ['-serial', this.comPort, '-sercfg', `${this.baudRate},8,n,1,N`];
+            const args = ['-batch', '-serial', this.comPort, '-sercfg', `${this.baudRate},8,n,1,N`];
             
-            console.log(chalk.dim(`[PlinkSerial]: Spawning plink.exe with serial port ${this.comPort}...`));
-            this.process = spawn('plink.exe', args);
+            let plinkPath = 'plink.exe';
+            const localCwdPath = path.resolve(process.cwd(), 'plink.exe');
+            const projectRootPath = path.resolve(__dirname, '..', '..', '..', 'plink.exe');
+            const nextToExecPath = path.resolve(__dirname, 'plink.exe');
+
+            if (fs.existsSync(localCwdPath)) {
+                plinkPath = localCwdPath;
+            } else if (fs.existsSync(projectRootPath)) {
+                plinkPath = projectRootPath;
+            } else if (fs.existsSync(nextToExecPath)) {
+                plinkPath = nextToExecPath;
+            }
+
+            console.log(chalk.dim(`[PlinkSerial]: Spawning plink process at ${plinkPath} with serial port ${this.comPort}...`));
+            this.process = spawn(plinkPath, args);
             this.process.stdin.setDefaultEncoding('utf-8');
+
+            let finished = false;
+
+            const cleanupAndReject = async (errMessage: string) => {
+                if (finished) return;
+                finished = true;
+                clearTimeout(connectTimer);
+                const available = await PlinkSerialSession.listAvailableComPorts();
+                const portMsg = available.length > 0 
+                    ? `Active COM ports detected: ${available.join(', ')}`
+                    : 'No active COM ports detected on the system.';
+                reject(new Error(`${errMessage}. ${portMsg}`));
+            };
+
+            this.process.stdin.on('error', (err) => {
+                console.error(chalk.dim(`[PlinkSerial Stdin Error]: ${err.message}`));
+            });
 
             this.process.stdout.on('data', (data: Buffer) => this.handleData(data));
             this.process.stderr.on('data', (data: Buffer) => {
@@ -30,19 +62,15 @@ export class PlinkSerialSession extends BaseSession {
             });
 
             this.process.on('error', async (err) => {
-                const available = await PlinkSerialSession.listAvailableComPorts();
-                const portMsg = available.length > 0 
-                    ? `Active COM ports detected: ${available.join(', ')}`
-                    : 'No active COM ports detected on the system.';
-                reject(new Error(`Failed to start plink process: ${err.message}. ${portMsg}`));
+                await cleanupAndReject(`Failed to start plink process: ${err.message}`);
             });
 
-            this.process.on('close', (code) => {
+            this.process.on('close', async (code) => {
                 console.log(chalk.dim(`[PlinkSerial]: plink process closed with code ${code}`));
+                await cleanupAndReject(`plink process exited prematurely with code ${code}`);
             });
             
-            
-            setTimeout(async () => {
+            const connectTimer = setTimeout(async () => {
                 try {
                     const match = PROMPT_REGEX.exec(this.buffer);
                     if (match) {
@@ -51,20 +79,17 @@ export class PlinkSerialSession extends BaseSession {
                         await this.execute('terminal length 0').catch(err => {
                             console.warn(chalk.dim(`[PlinkSerial Warning]: Failed to set terminal length 0: ${err.message}`));
                         });
+                        finished = true;
+                        this.process?.removeAllListeners('close');
+                        this.process?.on('close', (code) => {
+                            console.log(chalk.dim(`[PlinkSerial]: plink process closed with code ${code}`));
+                        });
                         resolve();
                     } else {
-                        const available = await PlinkSerialSession.listAvailableComPorts();
-                        const portMsg = available.length > 0 
-                            ? `Active COM ports detected: ${available.join(', ')}`
-                            : 'No active COM ports detected on the system.';
-                        reject(new Error(`Failed to sync serial prompt on ${this.comPort}. ${portMsg}`));
+                        await cleanupAndReject(`Failed to sync serial prompt on ${this.comPort}`);
                     }
                 } catch (e: any) {
-                    const available = await PlinkSerialSession.listAvailableComPorts();
-                    const portMsg = available.length > 0 
-                        ? `Active COM ports detected: ${available.join(', ')}`
-                        : 'No active COM ports detected on the system.';
-                    reject(new Error(`Connection synchronization failed: ${e.message}. ${portMsg}`));
+                    await cleanupAndReject(`Connection synchronization failed: ${e.message}`);
                 }
             }, 3000);
         });
@@ -111,8 +136,26 @@ export class PlinkSerialSession extends BaseSession {
                 }
             });
 
-            
-            proc.stdin.write(`${command}\r\n`);
+            if (!proc.stdin || !proc.stdin.writable) {
+                clearTimeout(timeout);
+                this.eventEmitter.removeAllListeners('stream_updated');
+                reject(new Error('Process stdin is not writable. Connection might be closed.'));
+                return;
+            }
+
+            try {
+                proc.stdin.write(`${command}\r\n`, (err) => {
+                    if (err) {
+                        clearTimeout(timeout);
+                        this.eventEmitter.removeAllListeners('stream_updated');
+                        reject(new Error(`Failed to write command to stdin: ${err.message}`));
+                    }
+                });
+            } catch (writeErr: any) {
+                clearTimeout(timeout);
+                this.eventEmitter.removeAllListeners('stream_updated');
+                reject(new Error(`Exception writing to process stdin: ${writeErr.message}`));
+            }
         });
     }
 
@@ -133,12 +176,20 @@ export class PlinkSerialSession extends BaseSession {
     public static async listAvailableComPorts(): Promise<string[]> {
         return new Promise((resolve) => {
             const { exec } = require('child_process');
-            exec('powershell -Command "[System.IO.Ports.SerialPort]::GetPortNames()"', (error: any, stdout: string) => {
+            const cmd = 'powershell -Command "Get-CimInstance Win32_PnPEntity | Where-Object { $_.Caption -match \'USB.*Serial|USB-to-Serial|Prolific|CH340|FTDI|Silicon Labs|CP210\' } | Select-Object -ExpandProperty Caption"';
+            exec(cmd, (error: any, stdout: string) => {
                 if (error) {
                     resolve([]);
                     return;
                 }
-                const ports = stdout.split(/\r?\n/).map(p => p.trim()).filter(p => p.length > 0);
+                const ports: string[] = [];
+                const lines = stdout.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
+                for (const line of lines) {
+                    const match = /\((COM\d+)\)/i.exec(line);
+                    if (match) {
+                        ports.push(match[1]);
+                    }
+                }
                 resolve(ports);
             });
         });

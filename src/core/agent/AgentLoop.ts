@@ -10,10 +10,15 @@ import { CiscoAgentTools } from '../../infrastructure/llm/ToolDefinitions';
 import { exec } from 'child_process';
 import { logger, createSpinner } from '../../cli/ui/ui';
 import chalk from 'chalk';
+import { PreExecutionValidator } from '../guardrails/PreExecutionValidator';
+import { AuditLogger } from '../guardrails/AuditLogger';
+import { HierarchicalAgentManager } from './HierarchicalAgentManager';
+import { StateDiff } from '../rollback/StateDiff';
 
 type AgentLoopOptions = {
     strictReferenceMode?: boolean;
     referenceTelemetry?: boolean;
+    rbacRole?: string;
 };
 
 export class CiscoAgentLoop {
@@ -25,6 +30,7 @@ export class CiscoAgentLoop {
     private commandReferenceEngine = CommandReferenceEngine.getInstance();
     private strictReferenceMode = false;
     private referenceTelemetry = true;
+    private rbacRole = 'admin';
     private options: AgentLoopOptions;
     private validationNudgeCount = 0;
     private lastTopologyDiscoveryAt = 0;
@@ -46,6 +52,10 @@ export class CiscoAgentLoop {
 
         if (typeof options.strictReferenceMode === 'boolean') {
             this.commandReferenceEngine.setStrictMode(options.strictReferenceMode);
+        }
+
+        if (options.rbacRole) {
+            this.rbacRole = options.rbacRole.toLowerCase();
         }
     }
 
@@ -140,11 +150,7 @@ export class CiscoAgentLoop {
                 
                 const thoughts = response.reasoning_content || response.content;
                 if (thoughts && thoughts.trim()) {
-                    console.log(chalk.gray('  ' + '─'.repeat(40)));
-                    thoughts.trim().split('\n').forEach(line => {
-                        console.log(chalk.dim(`  | ${line}`));
-                    });
-                    console.log(chalk.gray('  ' + '─'.repeat(40)));
+                    logger.reasoning(thoughts);
                 }
             } catch (err: any) {
                 modelSpinner.fail(`[Step ${executionDepth}/${MAX_STEPS}] LLM Client failed to respond.`);
@@ -251,7 +257,7 @@ export class CiscoAgentLoop {
                 }
             }
         } catch {
-            // Fall through to safe default.
+
         }
 
         return '127.0.0.1';
@@ -310,6 +316,30 @@ export class CiscoAgentLoop {
         const requestedDevice = args.device;
         const cleanCommand = targetCommand.trim();
 
+     
+        const assignedRole = HierarchicalAgentManager.routeCommand(cleanCommand);
+
+   
+        if (this.rbacRole === 'read_only') {
+            const lower = cleanCommand.toLowerCase();
+            const allowedReadOnlyPatterns = [/^show\s+/i, /^ping\s+/i, /^dir\s+/i, /^terminal\s+/i, /^exit$/i, /^end$/i];
+            const isAllowedReadOnly = allowedReadOnlyPatterns.some(p => p.test(lower));
+            if (!isAllowedReadOnly) {
+                logger.warn(`[RBAC BLOCK] Read-Only role blocked command: "${cleanCommand}"`);
+                this.injectToolResponse(call.id, 'execute_ios_command', `CRITICAL ERROR: RBAC policy violation. Your current role is READ_ONLY and you are blocked from executing modifying command "${cleanCommand}".`);
+                AuditLogger.log({
+                    timestamp: new Date().toISOString(),
+                    deviceId: requestedDevice || 'unknown',
+                    role: this.rbacRole,
+                    thought: this.messages[this.messages.length - 1]?.content || '',
+                    command: cleanCommand,
+                    status: 'BLOCKED',
+                    reason: 'RBAC role is READ_ONLY'
+                });
+                return;
+            }
+        }
+
         const commandValidation = await this.commandReferenceEngine.validateCommand(cleanCommand);
         if (this.strictReferenceMode && !commandValidation.allowed) {
             const suggestions = commandValidation.suggestions.length
@@ -331,7 +361,34 @@ export class CiscoAgentLoop {
             return;
         }
 
-       
+     
+        const tx = this.transactions.get(targetDeviceId);
+        const currentInterface = tx ? (tx as any).targetInterface : null;
+        const dryRunCheck = PreExecutionValidator.validateCommand(
+            cleanCommand,
+            targetDeviceId,
+            this.coordinator.getTopology(),
+            currentInterface
+        );
+
+        if (dryRunCheck.warnLevel === 'CRITICAL' || !dryRunCheck.safe) {
+            logger.warn(`[PRE-EXECUTION WARNING] Critical risk detected: ${dryRunCheck.reason}`);
+            const allowed = await this.firewall.verifyWithHuman(cleanCommand, dryRunCheck.reason || 'High risk context');
+            if (!allowed) {
+                this.injectToolResponse(call.id, 'execute_ios_command', `CRITICAL ERROR: Pre-execution validation blocked this command. Reason: ${dryRunCheck.reason}`);
+                AuditLogger.log({
+                    timestamp: new Date().toISOString(),
+                    deviceId: targetDeviceId,
+                    role: this.rbacRole,
+                    thought: this.messages[this.messages.length - 1]?.content || '',
+                    command: cleanCommand,
+                    status: 'BLOCKED',
+                    reason: dryRunCheck.reason
+                });
+                return;
+            }
+        }
+
         const lastCmdInfo = this.lastCommandPerDevice[targetDeviceId];
         if (lastCmdInfo && lastCmdInfo.command === cleanCommand) {
             lastCmdInfo.count++;
@@ -345,9 +402,6 @@ export class CiscoAgentLoop {
             return;
         }
 
-        
-        const tx = this.transactions.get(targetDeviceId);
-        const currentInterface = tx ? (tx as any).targetInterface : null;
         const firewallResult = this.firewall.checkCommand(cleanCommand, currentInterface);
 
         if (firewallResult.dangerous) {
@@ -358,17 +412,18 @@ export class CiscoAgentLoop {
             }
         }
 
-        
         if (tx) {
             tx.trackMutation(cleanCommand);
         }
 
-        
-        const cmdSpinner = createSpinner(`[${targetDeviceId}] Executing command: "${cleanCommand}"...`).start();
+       
+        const snapshotA = await this.captureDeviceSnapshot(targetDeviceId);
+
+        const cmdSpinner = createSpinner(`[${targetDeviceId}] [Agent: ${assignedRole}] Executing command: "${cleanCommand}"...`).start();
         try {
             const session = this.coordinator.getSession(targetDeviceId)!;
 
-            // Normalize context for read-only inspection commands to avoid mode-related failures.
+         
             const state = session.getState();
             if (/^show\s+/i.test(cleanCommand) && (state.currentMode === 'GLOBAL_CONFIG' || state.currentMode === 'INTERFACE_CONFIG')) {
                 await session.execute('end');
@@ -387,6 +442,17 @@ export class CiscoAgentLoop {
                     rollbackLogs = await tx.executeRollback(session);
                 }
                 rbSpinner.succeed(`[${targetDeviceId}] Rollback execution complete.`);
+
+              
+                AuditLogger.log({
+                    timestamp: new Date().toISOString(),
+                    deviceId: targetDeviceId,
+                    role: this.rbacRole,
+                    thought: this.messages[this.messages.length - 2]?.content || '',
+                    command: cleanCommand,
+                    status: 'ROLLBACK',
+                    reason: `Rollback triggered by error ${verification.errorType}. Reverted state successfully.`
+                });
                 
                 this.injectToolResponse(
                     call.id,
@@ -395,12 +461,76 @@ export class CiscoAgentLoop {
                 );
             } else {
                 cmdSpinner.succeed(`[${targetDeviceId}] Command completed: "${cleanCommand}"`);
-                this.injectToolResponse(call.id, 'execute_ios_command', processedOutput);
+
+              
+                const snapshotB = await this.captureDeviceSnapshot(targetDeviceId);
+                let diffSummary = '';
+                if (snapshotA && snapshotB) {
+                    const diffResult = StateDiff.diff(snapshotA, snapshotB);
+                    diffSummary = StateDiff.renderDiff(diffResult);
+                    if (diffSummary && diffSummary !== 'No configuration differences detected.') {
+                        logger.info(`[State Diff for ${targetDeviceId}]:\n${diffSummary}`);
+                    }
+                }
+
+              
+                AuditLogger.log({
+                    timestamp: new Date().toISOString(),
+                    deviceId: targetDeviceId,
+                    role: this.rbacRole,
+                    thought: this.messages[this.messages.length - 2]?.content || '',
+                    command: cleanCommand,
+                    status: 'SUCCESS',
+                    outputSnippet: `${processedOutput}${diffSummary ? `\nState Changes:\n${diffSummary}` : ''}`
+                });
+
+                this.injectToolResponse(
+                    call.id,
+                    'execute_ios_command',
+                    processedOutput + (diffSummary ? `\n\n[State Diff Configured]:\n${diffSummary}` : '')
+                );
             }
         } catch (error: any) {
             cmdSpinner.fail(`[${targetDeviceId}] Command failed: "${cleanCommand}" (${error.message})`);
             this.injectToolResponse(call.id, 'execute_ios_command', `Hardware Session Fault: ${error.message}`);
         }
+    }
+
+    private async captureDeviceSnapshot(deviceId: string): Promise<any> {
+        const session = this.coordinator.getSession(deviceId);
+        if (!session) return null;
+
+        if (typeof (session as any).interfaces !== 'undefined') {
+            const mock = session as any;
+            const interfaceList: any[] = [];
+            for (const [name, conf] of mock.interfaces.entries()) {
+                interfaceList.push({
+                    name,
+                    ip: conf.ip,
+                    subnet: conf.subnet,
+                    adminShutdown: conf.adminShutdown,
+                    lineProtocolUp: conf.lineProtocolUp,
+                    description: conf.description
+                });
+            }
+            return {
+                deviceId,
+                timestamp: new Date().toISOString(),
+                sessionState: session.getState(),
+                interfaces: interfaceList,
+                routes: [...mock.routes],
+                vlans: Array.from(mock.vlans as Set<number>)
+            };
+        }
+
+        return {
+            deviceId,
+            timestamp: new Date().toISOString(),
+            sessionState: session.getState(),
+            interfaces: [],
+            routes: [],
+            vlans: []
+        };
     }
 
     private async handleEnableIosShellCall(call: ToolCall): Promise<void> {

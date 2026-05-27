@@ -9,6 +9,8 @@ import { TelnetSession } from './infrastructure/protocols/TelnetSession';
 import { LLMClient, LLMProvider } from './infrastructure/llm/LLMClient';
 import { CiscoAgentLoop } from './core/agent/AgentLoop';
 import { MockSession } from './infrastructure/protocols/MockSession';
+import { NetconfSession } from './infrastructure/protocols/NetconfSession';
+import { CmlSession } from './infrastructure/protocols/CmlSession';
 import { logger, createSpinner } from './cli/ui/ui';
 
 const program = new Command();
@@ -69,7 +71,7 @@ program
 program
     .command('run')
     .description('Execute network configuration or optimization tasks on target Cisco hardware')
-    .option('--protocol <type>', 'Connection protocol (serial | ssh | telnet | mock)', 'serial')
+    .option('--protocol <type>', 'Connection protocol (serial | ssh | telnet | mock | netconf | cml)', 'serial')
     
     .option('--provider <type>', 'LLM provider mode (local | cloud)', 'local')
     .option('--api-key <key>', 'API key for cloud provider (OpenRouter)')
@@ -88,6 +90,7 @@ program
     .option('--strict-command-ref', 'Enable strict command validation against cf_command_ref.pdf index')
     .option('--no-ref-telemetry', 'Disable command-reference telemetry logs during startup')
     .option('--non-interactive', 'Disable interactive human-in-the-loop prompts (automatically reject dangerous commands)')
+    .option('--rbac-role <role>', 'Role-based Access Control role (admin | read_only)', 'admin')
     
     .option('-g, --goal <intent>', 'The execution goal for the agent to achieve')
     .action(async (options) => {
@@ -107,6 +110,7 @@ program
         let strictCommandRef = options.strictCommandRef === true;
         let refTelemetry = options.refTelemetry !== false;
         let nonInteractive = options.nonInteractive === true;
+        let rbacRole = options.rbacRole || 'admin';
 
         if (nonInteractive) {
             process.env.CISCOLLM_NON_INTERACTIVE = 'true';
@@ -232,7 +236,7 @@ program
                                 type: 'input',
                                 name: 'apiKey',
                                 message: 'Enter OpenRouter API Key (or type "back" to go back):',
-                                default: answers.apiKey
+                                default: answers.apiKey || undefined
                             }
                         ]);
                         if (ans.apiKey.trim().toLowerCase() === 'back') {
@@ -247,7 +251,7 @@ program
                     case 'MODEL': {
                         const defaultModel = answers.model || (answers.provider === 'cloud' 
                             ? 'nvidia/nemotron-3-super-120b-a12b:free' 
-                            : 'qwen3.5-4b');
+                            : 'qwen3.5:4b');
 
                         const ans = await inquirer.prompt([
                             {
@@ -322,23 +326,68 @@ program
                     }
 
                     case 'SERIAL_COM': {
-                        const ans = await inquirer.prompt([
-                            {
-                                type: 'input',
-                                name: 'com',
-                                message: 'Enter COM Port name(s) (comma-separated, e.g. COM3 or COM3,COM4) (or type "back" to go back):',
-                                default: answers.com,
-                                validate: (input) => {
-                                    if (input.trim().toLowerCase() === 'back') return true;
-                                    return input.trim().length > 0 ? true : 'COM port is required.';
+                        if (detectedComs.length > 0) {
+                            const choices = detectedComs.map(port => ({ name: port, value: port }));
+                            choices.push({ name: 'Enter COM port(s) manually', value: '__manual__' });
+                            choices.push({ name: chalk.dim('< Go Back'), value: '__back__' });
+
+                            const ans = await inquirer.prompt([
+                                {
+                                    type: 'checkbox',
+                                    name: 'coms',
+                                    message: 'Select COM Port(s) (Use Space to select, Enter to confirm):',
+                                    choices: choices,
+                                    validate: (input) => {
+                                        if (input.length === 0) {
+                                            return 'You must select at least one option.';
+                                        }
+                                        if (input.includes('__back__') && input.length > 1) {
+                                            return 'Cannot select "< Go Back" along with other ports.';
+                                        }
+                                        if (input.includes('__manual__') && input.length > 1) {
+                                            return 'Cannot select "Enter COM port(s) manually" along with other ports.';
+                                        }
+                                        return true;
+                                    }
                                 }
+                            ]);
+
+                            if (ans.coms.includes('__back__')) {
+                                goBack();
+                            } else if (ans.coms.includes('__manual__')) {
+                                const manualAns = await inquirer.prompt([
+                                    {
+                                        type: 'input',
+                                        name: 'com',
+                                        message: 'Enter COM Port name(s) (comma-separated, e.g. COM3 or COM3,COM4):',
+                                        validate: (input) => input.trim().length > 0 ? true : 'COM port is required.'
+                                    }
+                                ]);
+                                answers.com = manualAns.com;
+                                goForward('SERIAL_BAUD');
+                            } else {
+                                answers.com = ans.coms.join(',');
+                                goForward('SERIAL_BAUD');
                             }
-                        ]);
-                        if (ans.com.trim().toLowerCase() === 'back') {
-                            goBack();
                         } else {
-                            answers.com = ans.com;
-                            goForward('SERIAL_BAUD');
+                            const ans = await inquirer.prompt([
+                                {
+                                    type: 'input',
+                                    name: 'com',
+                                    message: 'Enter COM Port name(s) (comma-separated, e.g. COM3 or COM3,COM4) (or type "back" to go back):',
+                                    default: answers.com || undefined,
+                                    validate: (input) => {
+                                        if (input.trim().toLowerCase() === 'back') return true;
+                                        return input.trim().length > 0 ? true : 'COM port is required.';
+                                    }
+                                }
+                            ]);
+                            if (ans.com.trim().toLowerCase() === 'back') {
+                                goBack();
+                            } else {
+                                answers.com = ans.com;
+                                goForward('SERIAL_BAUD');
+                            }
                         }
                         break;
                     }
@@ -371,7 +420,7 @@ program
                                 type: 'input',
                                 name: 'host',
                                 message: 'Enter Target IP address(es) / Hostname(s) (comma-separated) (or type "back" to go back):',
-                                default: answers.host,
+                                default: answers.host || undefined,
                                 validate: (input) => {
                                     if (input.trim().toLowerCase() === 'back') return true;
                                     return input.trim().length > 0 ? true : 'Host address is required.';
@@ -393,7 +442,7 @@ program
                                 type: 'input',
                                 name: 'port',
                                 message: 'Enter Connection Port (leave empty for default) (or type "back" to go back):',
-                                default: answers.port
+                                default: answers.port || undefined
                             }
                         ]);
                         if (ans.port.trim().toLowerCase() === 'back') {
@@ -411,7 +460,7 @@ program
                                 type: 'input',
                                 name: 'username',
                                 message: 'Enter Device Username (leave empty if none) (or type "back" to go back):',
-                                default: answers.username
+                                default: answers.username || undefined
                             }
                         ]);
                         if (ans.username.trim().toLowerCase() === 'back') {
@@ -429,7 +478,7 @@ program
                                 type: 'password',
                                 name: 'password',
                                 message: 'Enter Device Password (leave empty if none) (or type "back" to go back):',
-                                default: answers.password
+                                default: answers.password || undefined
                             }
                         ]);
                         if (ans.password === 'back') {
@@ -447,7 +496,7 @@ program
                                 type: 'input',
                                 name: 'goal',
                                 message: 'Enter your configuration goal for the Cisco device (or type "back" to go back):',
-                                default: answers.goal,
+                                default: answers.goal || undefined,
                                 validate: (input) => {
                                     if (input.trim().toLowerCase() === 'back') return true;
                                     return input.trim().length > 0 ? true : 'Goal is required.';
@@ -461,7 +510,7 @@ program
                           
                             console.log(chalk.bold.yellow('Configuration Summary:'));
                             console.log(`- LLM Provider:   ${chalk.cyan(answers.provider)}` + (answers.provider === 'local' ? ` (${answers.localType})` : ''));
-                            console.log(`- Model Name:     ${chalk.cyan(answers.model || (answers.provider === 'cloud' ? 'nvidia/nemotron-3-super-120b-a12b:free' : 'qwen3.5-4b'))}`);
+                            console.log(`- Model Name:     ${chalk.cyan(answers.model || (answers.provider === 'cloud' ? 'nvidia/nemotron-3-super-120b-a12b:free' : 'qwen3.5:4b'))}`);
                             console.log(`- API Endpoint:   ${chalk.cyan(answers.endpoint || 'default')}`);
                             console.log(`- Protocol:       ${chalk.cyan(answers.protocol)}`);
                             if (answers.protocol === 'serial') {
@@ -570,6 +619,19 @@ program
                     const session = new MockSession(name);
                     activeCoordinator.registerSession(name, session);
                 }
+            } else if (protocol === 'netconf') {
+                if (!host) {
+                    throw new Error('Host (--host) is required for NETCONF protocol connections.');
+                }
+                const hosts = host.split(',').map((h: string) => h.trim()).filter((h: string) => h.length > 0);
+                for (const h of hosts) {
+                    const session = new NetconfSession(h, port ? parseInt(port, 10) : 830);
+                    activeCoordinator.registerSession(h, session);
+                }
+            } else if (protocol === 'cml') {
+                const endpointUrl = endpoint || 'http://127.0.0.1:8080';
+                const session = new CmlSession(endpointUrl, username, password);
+                activeCoordinator.registerSession('cml-sandbox', session);
             } else {
                 throw new Error(`Unsupported connection protocol type: ${protocol}`);
             }
@@ -605,7 +667,8 @@ program
 
             const agent = new CiscoAgentLoop(localAIClient, activeCoordinator, {
                 strictReferenceMode: strictCommandRef,
-                referenceTelemetry: refTelemetry
+                referenceTelemetry: refTelemetry,
+                rbacRole: rbacRole
             });
             await agent.run(goal);
 
