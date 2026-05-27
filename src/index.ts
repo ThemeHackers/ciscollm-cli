@@ -12,6 +12,7 @@ import { MockSession } from './infrastructure/protocols/MockSession';
 import { NetconfSession } from './infrastructure/protocols/NetconfSession';
 import { CmlSession } from './infrastructure/protocols/CmlSession';
 import { logger, createSpinner } from './cli/ui/ui';
+import { readFileSync } from 'fs';
 
 const program = new Command();
 let activeCoordinator: MultiAgentCoordinator | null = null;
@@ -83,10 +84,17 @@ program
     .option('--port <port>', 'Target connection port')
     .option('-u, --username <name>', 'Device login username')
     .option('-p, --password <pass>', 'Device login password')
+    .option('--env-password', 'Read device password from $CISCOLLM_PASS environment variable (safe for special chars)')
+    .option('--private-key <path>', 'SSH private key file path for protocols that support key-based auth')
+    .option('--passphrase <passphrase>', 'Passphrase for the SSH private key file')
+    .option('--netconf-ready-timeout <ms>', 'NETCONF SSH ready timeout in milliseconds')
+    .option('--netconf-hello-timeout <ms>', 'NETCONF hello exchange timeout in milliseconds')
+    .option('--netconf-rpc-timeout <ms>', 'NETCONF RPC timeout in milliseconds')
+    .option('--netconf-keepalive-interval <ms>', 'NETCONF SSH keepalive interval in milliseconds')
     
-    .option('--local-type <type>', 'Local service type (ollama | lmstudio)', 'ollama')
+    .option('--local-type <type>', 'Local service type (ollama | lmstudio)')
     .option('--model <name>', 'Model name for compilation')
-    .option('--endpoint <url>', 'Ollama/compatibility API server endpoint')
+    .option('--endpoint <url>', 'Ollama/LM Studio/compatibility API server endpoint')
     .option('--strict-command-ref', 'Enable strict command validation against cf_command_ref.pdf index')
     .option('--no-ref-telemetry', 'Disable command-reference telemetry logs during startup')
     .option('--non-interactive', 'Disable interactive human-in-the-loop prompts (automatically reject dangerous commands)')
@@ -95,7 +103,7 @@ program
     .option('-g, --goal <intent>', 'The execution goal for the agent to achieve')
     .action(async (options) => {
         let provider = options.provider as LLMProvider;
-        let localType = options.localType;
+        let localType = options.localType as string | undefined;
         let apiKey = options.api_key || options.apiKey;
         let model = options.model;
         let endpoint = options.endpoint;
@@ -105,7 +113,15 @@ program
         let host = options.host;
         let port = options.port;
         let username = options.username;
-        let password = options.password;
+        let privateKey: string | undefined;
+        if (options.privateKey) {
+            privateKey = readFileSync(options.privateKey, 'utf8');
+        }
+        let netconfPassphrase = options.passphrase;
+
+        let password = options.envPassword
+            ? (process.env.CISCOLLM_PASS || '')
+            : options.password;
         let goal = options.goal;
         let strictCommandRef = options.strictCommandRef === true;
         let refTelemetry = options.refTelemetry !== false;
@@ -115,6 +131,35 @@ program
         if (nonInteractive) {
             process.env.CISCOLLM_NON_INTERACTIVE = 'true';
         }
+
+     
+        if (goal && !localType && provider === 'local') {
+            const { chosenLocalType } = await inquirer.prompt([
+                {
+                    type: 'list',
+                    name: 'chosenLocalType',
+                    message: chalk.cyan('Select Local LLM Service:'),
+                    choices: [
+                        { name: `${chalk.green('●')} Ollama          ${chalk.dim('(http://127.0.0.1:11434/v1)')}`, value: 'ollama' },
+                        { name: `${chalk.magenta('●')} LM Studio       ${chalk.dim('(http://127.0.0.1:1234/v1)')}`, value: 'lmstudio' },
+                        { name: `${chalk.yellow('●')} OpenRouter      ${chalk.dim('(Cloud API)')}`, value: '__cloud__' }
+                    ],
+                    default: 'ollama'
+                }
+            ]);
+            if (chosenLocalType === '__cloud__') {
+                provider = 'cloud';
+                localType = undefined;
+                if (!apiKey) {
+                    const { key } = await inquirer.prompt([{ type: 'password', name: 'key', message: 'OpenRouter API Key:' }]);
+                    apiKey = key;
+                }
+            } else {
+                localType = chosenLocalType;
+            }
+        }
+
+        if (!localType) localType = 'ollama';
 
         
         if (!goal) {
@@ -138,6 +183,9 @@ program
                 | 'IP_PORT'
                 | 'IP_USER'
                 | 'IP_PASS'
+                | 'NETCONF_AUTH'
+                | 'NETCONF_KEY_PATH'
+                | 'NETCONF_PASSPHRASE'
                 | 'GOAL'
                 | 'CONFIRMATION';
 
@@ -157,6 +205,9 @@ program
                 port: port || '',
                 username: username || '',
                 password: password || '',
+                netconfAuth: 'password',
+                netconfPrivateKey: '',
+                netconfPassphrase: '',
                 goal: ''
             };
 
@@ -304,6 +355,8 @@ program
                                     { name: 'serial', value: 'serial' },
                                     { name: 'ssh', value: 'ssh' },
                                     { name: 'telnet', value: 'telnet' },
+                                    { name: 'netconf', value: 'netconf' },
+                                    { name: 'cml', value: 'cml' },
                                     { name: 'mock', value: 'mock' },
                                     { name: chalk.dim('< Go Back'), value: '__back__' }
                                 ],
@@ -316,7 +369,12 @@ program
                             answers.protocol = ans.protocol;
                             if (answers.protocol === 'serial') {
                                 goForward('SERIAL_COM');
-                            } else if (answers.protocol === 'ssh' || answers.protocol === 'telnet') {
+                            } else if (
+                                answers.protocol === 'ssh' || 
+                                answers.protocol === 'telnet' || 
+                                answers.protocol === 'netconf' || 
+                                answers.protocol === 'cml'
+                            ) {
                                 goForward('IP_HOST');
                             } else {
                                 goForward('GOAL');
@@ -467,7 +525,73 @@ program
                             goBack();
                         } else {
                             answers.username = ans.username;
-                            goForward('IP_PASS');
+                            goForward(answers.protocol === 'netconf' ? 'NETCONF_AUTH' : 'IP_PASS');
+                        }
+                        break;
+                    }
+
+                    case 'NETCONF_AUTH': {
+                        const ans = await inquirer.prompt([
+                            {
+                                type: 'list',
+                                name: 'netconfAuth',
+                                message: 'NETCONF authentication method: choose password or SSH key-based auth.',
+                                choices: [
+                                    { name: 'Password login', value: 'password' },
+                                    { name: 'SSH private key', value: 'key' },
+                                    { name: chalk.dim('< Go Back'), value: '__back__' }
+                                ],
+                                default: answers.netconfAuth || 'password'
+                            }
+                        ]);
+
+                        if (ans.netconfAuth === '__back__') {
+                            goBack();
+                        } else {
+                            answers.netconfAuth = ans.netconfAuth;
+                            goForward(ans.netconfAuth === 'key' ? 'NETCONF_KEY_PATH' : 'IP_PASS');
+                        }
+                        break;
+                    }
+
+                    case 'NETCONF_KEY_PATH': {
+                        const ans = await inquirer.prompt([
+                            {
+                                type: 'input',
+                                name: 'netconfPrivateKey',
+                                message: 'Enter SSH private key file path for NETCONF (or type "back" to change auth method):',
+                                default: answers.netconfPrivateKey || undefined,
+                                validate: (input) => {
+                                    if (input.trim().toLowerCase() === 'back') return true;
+                                    return input.trim().length > 0 ? true : 'Private key path is required for key-based auth.';
+                                }
+                            }
+                        ]);
+
+                        if (ans.netconfPrivateKey.trim().toLowerCase() === 'back') {
+                            goBack();
+                        } else {
+                            answers.netconfPrivateKey = ans.netconfPrivateKey;
+                            goForward('NETCONF_PASSPHRASE');
+                        }
+                        break;
+                    }
+
+                    case 'NETCONF_PASSPHRASE': {
+                        const ans = await inquirer.prompt([
+                            {
+                                type: 'password',
+                                name: 'netconfPassphrase',
+                                message: 'Enter SSH key passphrase for NETCONF (leave empty if none) (or type "back" to go back):',
+                                default: answers.netconfPassphrase || undefined
+                            }
+                        ]);
+
+                        if (ans.netconfPassphrase === 'back') {
+                            goBack();
+                        } else {
+                            answers.netconfPassphrase = ans.netconfPassphrase;
+                            goForward('GOAL');
                         }
                         break;
                     }
@@ -516,10 +640,18 @@ program
                             if (answers.protocol === 'serial') {
                                 console.log(`- COM Port:       ${chalk.cyan(answers.com)}`);
                                 console.log(`- Baud Rate:      ${chalk.cyan(answers.baud)}`);
-                            } else if (answers.protocol === 'ssh' || answers.protocol === 'telnet') {
+                            } else if (
+                                answers.protocol === 'ssh' || 
+                                answers.protocol === 'telnet' || 
+                                answers.protocol === 'netconf' || 
+                                answers.protocol === 'cml'
+                            ) {
                                 console.log(`- Host Target:    ${chalk.cyan(answers.host)}`);
                                 console.log(`- Port:           ${chalk.cyan(answers.port || 'default')}`);
                                 console.log(`- Username:       ${chalk.cyan(answers.username || '(none)')}`);
+                                if (answers.protocol === 'netconf') {
+                                    console.log(`- NETCONF Auth:   ${chalk.cyan(answers.netconfAuth || 'password')}` + (answers.netconfAuth === 'key' ? ` (${chalk.cyan(answers.netconfPrivateKey || '(unset)')})` : ''));
+                                }
                             }
                             console.log(`- Config Goal:    ${chalk.green(`"${answers.goal}"`)}`);
                           
@@ -567,12 +699,27 @@ program
             port = answers.port;
             username = answers.username;
             password = answers.password;
+            if (answers.netconfAuth === 'key' && answers.netconfPrivateKey) {
+                privateKey = readFileSync(answers.netconfPrivateKey, 'utf8');
+            }
+            netconfPassphrase = answers.netconfPassphrase || netconfPassphrase;
             goal = answers.goal;
         }
 
         logger.info(`Initializing system link in [${provider.toUpperCase()}] mode using ${protocol.toUpperCase()}...`);
             logger.info(`Command reference policy: strict=${strictCommandRef ? 'on' : 'off'}, telemetry=${refTelemetry ? 'on' : 'off'}`);
         activeCoordinator = new MultiAgentCoordinator();
+
+        const netconfSessionOptions = {
+            username,
+            password,
+            privateKey,
+            passphrase: netconfPassphrase,
+            readyTimeoutMs: options.netconfReadyTimeout ? parseInt(options.netconfReadyTimeout, 10) : undefined,
+            helloTimeoutMs: options.netconfHelloTimeout ? parseInt(options.netconfHelloTimeout, 10) : undefined,
+            rpcTimeoutMs: options.netconfRpcTimeout ? parseInt(options.netconfRpcTimeout, 10) : undefined,
+            keepaliveInterval: options.netconfKeepaliveInterval ? parseInt(options.netconfKeepaliveInterval, 10) : undefined
+        };
 
         try {
             
@@ -625,11 +772,14 @@ program
                 }
                 const hosts = host.split(',').map((h: string) => h.trim()).filter((h: string) => h.length > 0);
                 for (const h of hosts) {
-                    const session = new NetconfSession(h, port ? parseInt(port, 10) : 830);
+                    const session = new NetconfSession(h, port ? parseInt(port, 10) : 830, netconfSessionOptions);
                     activeCoordinator.registerSession(h, session);
                 }
             } else if (protocol === 'cml') {
-                const endpointUrl = endpoint || 'http://127.0.0.1:8080';
+                let endpointUrl = host || endpoint || 'http://127.0.0.1:8080';
+                if (endpointUrl && !endpointUrl.startsWith('http://') && !endpointUrl.startsWith('https://')) {
+                    endpointUrl = `https://${endpointUrl}`;
+                }
                 const session = new CmlSession(endpointUrl, username, password);
                 activeCoordinator.registerSession('cml-sandbox', session);
             } else {
@@ -637,7 +787,13 @@ program
             }
 
             if (provider === 'local' && !endpoint) {
-                endpoint = localType === 'lmstudio' ? 'http://127.0.0.1:1234/v1' : 'http://127.0.0.1:11434/v1';
+                if (localType === 'lmstudio') {
+                    endpoint = 'http://127.0.0.1:1234/v1';
+                    logger.info(`LM Studio endpoint: ${chalk.cyan(endpoint)}`);
+                } else {
+                    endpoint = 'http://127.0.0.1:11434/v1';
+                    logger.info(`Ollama endpoint: ${chalk.cyan(endpoint)}`);
+                }
             }
 
             const localAIClient = new LLMClient(

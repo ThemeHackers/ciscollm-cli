@@ -21,11 +21,19 @@ type AgentLoopOptions = {
     rbacRole?: string;
 };
 
+type CommandCategory = 'inspection' | 'configuration' | 'other';
+
+type DeviceCommandHistory = {
+    command: string;
+    count: number;
+    category: CommandCategory;
+};
+
 export class CiscoAgentLoop {
     private messages: ChatMessage[] = [];
     private transactions: Map<string, TransactionManager> = new Map();
     private firewall = new CommandFirewall();
-    private lastCommandPerDevice: Record<string, { command: string; count: number }> = {};
+    private lastCommandPerDevice: Record<string, DeviceCommandHistory> = {};
     private commandHints = 'Reference status: not loaded.';
     private commandReferenceEngine = CommandReferenceEngine.getInstance();
     private strictReferenceMode = false;
@@ -303,6 +311,37 @@ export class CiscoAgentLoop {
         throw new Error(`Multiple devices connected (${devices.join(', ')}). You must specify the "device" parameter.`);
     }
 
+    private classifyCommand(command: string): CommandCategory {
+        const normalized = command.trim().toLowerCase();
+
+        const inspectionPatterns = [
+            /^show\s+/i,
+            /^ping\s+/i,
+            /^traceroute\s+/i,
+            /^dir\s+/i,
+            /^display\s+/i,
+            /^more\s+/i,
+            /^terminal\s+length\s+\d+/i,
+            /^show\s+(running-config|startup-config|version|clock|logging|inventory|environment|users?|process(?:es)?|interfaces?(?:\s+status)?|ip\s+interface\s+brief|ip\s+route|arp|mac\s+address-table|vlan(?:\s+brief)?|cdp\s+neighbors(?:\s+detail)?|lldp\s+neighbors(?:\s+detail)?|spanning-tree|access-lists?|ip\s+ospf\s+neighbor|ip\s+bgp\s+summary|platform|module|power|etherchannel\s+summary|controllers?)/i,
+            /^copy\s+(running-config\s+flash:|startup-config\s+running-config)/i
+        ];
+
+        if (inspectionPatterns.some(pattern => pattern.test(normalized))) {
+            return 'inspection';
+        }
+
+        const configurationPatterns = [
+            /^(configure terminal|conf t|end|exit)$/i,
+            /^(interface\s+\S+|router\s+(ospf|bgp|rip|eigrp)\b|vlan\s+\d+|ip\s+address\b|no\s+shutdown\b|shutdown\b|description\b|switchport\b|spanning-tree\b|ip\s+route\b|access-list\b|ip\s+access-list\b|username\b|aaa\b|crypto\b|ntp\b|snmp-server\b|hostname\b|default\s+interface\b|vrf\s+definition\b|route-map\b|policy-map\b|class-map\b|channel-group\b|standby\b|tunnel\s+\S+|ip\s+helper-address\b|ip\s+domain-name\b|line\s+\S+\s+\d*\b|service\s+\S+|shell\s+processing\s+full|terminal\s+shell)/i
+        ];
+
+        if (configurationPatterns.some(pattern => pattern.test(normalized))) {
+            return 'configuration';
+        }
+
+        return 'other';
+    }
+
     private async handleExecuteCommandCall(call: ToolCall): Promise<void> {
         let args;
         try {
@@ -389,14 +428,26 @@ export class CiscoAgentLoop {
             }
         }
 
+        const commandCategory = this.classifyCommand(cleanCommand);
         const lastCmdInfo = this.lastCommandPerDevice[targetDeviceId];
-        if (lastCmdInfo && lastCmdInfo.command === cleanCommand) {
+
+        if (commandCategory === 'inspection') {
+            this.lastCommandPerDevice[targetDeviceId] = {
+                command: cleanCommand,
+                count: 0,
+                category: commandCategory
+            };
+        } else if (lastCmdInfo && lastCmdInfo.command === cleanCommand && lastCmdInfo.category === commandCategory) {
             lastCmdInfo.count++;
         } else {
-            this.lastCommandPerDevice[targetDeviceId] = { command: cleanCommand, count: 1 };
+            this.lastCommandPerDevice[targetDeviceId] = {
+                command: cleanCommand,
+                count: 1,
+                category: commandCategory
+            };
         }
 
-        if (this.lastCommandPerDevice[targetDeviceId].count > 3) {
+        if (commandCategory !== 'inspection' && this.lastCommandPerDevice[targetDeviceId].count > 3) {
             logger.error(`Loop detected on command "${cleanCommand}" on device ${targetDeviceId}.`);
             this.injectToolResponse(call.id, 'execute_ios_command', `CRITICAL ERROR: Loop check block. You have run "${cleanCommand}" multiple times with errors. Re-verify your settings before retrying.`);
             return;

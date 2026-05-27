@@ -23,10 +23,10 @@ export class TelnetSession extends BaseSession {
     public async connect(): Promise<void> {
         return new Promise((resolve, reject) => {
             const port = this.config.port || 23;
-            console.log(chalk.dim(`[TelnetSession]: Connecting to ${this.config.host}:${port}...`));
+            console.log(chalk.cyan(`❯ Connecting to telnet host ${this.config.host}:${port}...`));
             
             this.socket = net.createConnection({ host: this.config.host, port }, () => {
-                console.log(chalk.dim('[TelnetSession]: TCP socket connection established.'));
+                console.log(chalk.green(`✔ TCP socket connection established.`));
             });
 
             this.socket.on('data', (data: Buffer) => this.handleRawData(data));
@@ -36,7 +36,7 @@ export class TelnetSession extends BaseSession {
             });
 
             this.socket.on('close', () => {
-                console.log(chalk.dim('[TelnetSession]: Socket connection closed.'));
+                console.log(chalk.gray(`❯ Telnet socket connection closed.`));
             });
 
             
@@ -50,12 +50,12 @@ export class TelnetSession extends BaseSession {
                 const lowerBuf = this.buffer.toLowerCase();
                 
                 if (loginState === 'USER' && (lowerBuf.includes('username:') || lowerBuf.includes('login:'))) {
-                    console.log(chalk.dim('[TelnetSession]: Sending username...'));
+                    console.log(chalk.cyan(`❯ Sending username...`));
                     this.socket?.write(`${this.config.username || ''}\r\n`);
                     this.buffer = '';
                     loginState = 'PASS';
                 } else if (loginState === 'PASS' && lowerBuf.includes('password:')) {
-                    console.log(chalk.dim('[TelnetSession]: Sending password...'));
+                    console.log(chalk.cyan(`❯ Sending password...`));
                     this.socket?.write(`${this.config.password || ''}\r\n`);
                     this.buffer = '';
                     loginState = 'PROMPT';
@@ -65,11 +65,11 @@ export class TelnetSession extends BaseSession {
                         clearTimeout(connectTimeout);
                         this.eventEmitter.removeListener('stream_updated', checkState);
                         this.updateStateFromPrompt(match[1]);
-                        console.log(chalk.dim(`[TelnetSession]: Logged in successfully. Syncing terminal settings...`));
+                        console.log(chalk.green(`✔ Logged in successfully. Syncing terminal settings...`));
                         
                         
                         await this.execute('terminal length 0').catch(err => {
-                            console.warn(chalk.dim(`[TelnetSession Warning]: Failed to set terminal length 0: ${err.message}`));
+                            console.warn(chalk.yellow(`⚠ Failed to set terminal length 0: ${err.message}`));
                         });
                         resolve();
                     }
@@ -160,6 +160,6 @@ export class TelnetSession extends BaseSession {
             this.socket.destroy();
             this.socket = null;
         }
-        console.log(chalk.dim('[TelnetSession]: Telnet Session disconnected.'));
+        console.log(chalk.green(`✔ Telnet Session to ${this.config.host} disconnected cleanly.`));
     }
 }

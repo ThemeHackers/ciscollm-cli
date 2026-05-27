@@ -2,6 +2,7 @@ import { BaseSession } from './BaseSession';
 import { CiscoDeviceMode } from '../../shared/types';
 import * as fs from 'fs';
 import * as path from 'path';
+import chalk from 'chalk';
 
 interface InterfaceConfig {
     ip: string | null;
@@ -174,7 +175,7 @@ export class MockSession extends BaseSession {
     }
 
     public async connect(): Promise<void> {
-        console.log(`[MockSession - ${this.deviceId}]: Simulated session established.`);
+        console.log(chalk.green(`✔ Simulated device session for "${this.deviceId}" established.`));
         return Promise.resolve();
     }
 
@@ -365,7 +366,7 @@ export class MockSession extends BaseSession {
     }
 
     public async disconnect(): Promise<void> {
-        console.log(`[MockSession - ${this.deviceId}]: Session disconnected.`);
+        console.log(chalk.gray(`❯ Simulated session for "${this.deviceId}" disconnected.`));
         return Promise.resolve();
     }
 

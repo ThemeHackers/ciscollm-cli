@@ -35,7 +35,7 @@ export class PlinkSerialSession extends BaseSession {
                 plinkPath = nextToExecPath;
             }
 
-            console.log(chalk.dim(`[PlinkSerial]: Spawning plink process at ${plinkPath} with serial port ${this.comPort}...`));
+            console.log(chalk.cyan(`❯ Spawning connection via serial port ${this.comPort}...`));
             this.process = spawn(plinkPath, args);
             this.process.stdin.setDefaultEncoding('utf-8');
 
@@ -53,12 +53,12 @@ export class PlinkSerialSession extends BaseSession {
             };
 
             this.process.stdin.on('error', (err) => {
-                console.error(chalk.dim(`[PlinkSerial Stdin Error]: ${err.message}`));
+                console.error(chalk.red(`⚠ Stdin Error: ${err.message}`));
             });
 
             this.process.stdout.on('data', (data: Buffer) => this.handleData(data));
             this.process.stderr.on('data', (data: Buffer) => {
-                console.error(chalk.dim(`[Plink Stderr]: ${data.toString()}`));
+                console.error(chalk.red(`⚠ Stderr: ${data.toString()}`));
             });
 
             this.process.on('error', async (err) => {
@@ -66,7 +66,7 @@ export class PlinkSerialSession extends BaseSession {
             });
 
             this.process.on('close', async (code) => {
-                console.log(chalk.dim(`[PlinkSerial]: plink process closed with code ${code}`));
+                console.log(chalk.gray(`❯ Plink process closed with code ${code}`));
                 await cleanupAndReject(`plink process exited prematurely with code ${code}`);
             });
             
@@ -75,14 +75,14 @@ export class PlinkSerialSession extends BaseSession {
                     const match = PROMPT_REGEX.exec(this.buffer);
                     if (match) {
                         this.updateStateFromPrompt(match[1]);
-                        console.log(chalk.dim(`[PlinkSerial]: Sending 'terminal length 0' to disable pagination...`));
+                        console.log(chalk.cyan(`❯ Disabling pagination with 'terminal length 0'...`));
                         await this.execute('terminal length 0').catch(err => {
-                            console.warn(chalk.dim(`[PlinkSerial Warning]: Failed to set terminal length 0: ${err.message}`));
+                            console.warn(chalk.yellow(`⚠ Failed to set terminal length 0: ${err.message}`));
                         });
                         finished = true;
                         this.process?.removeAllListeners('close');
                         this.process?.on('close', (code) => {
-                            console.log(chalk.dim(`[PlinkSerial]: plink process closed with code ${code}`));
+                            console.log(chalk.gray(`❯ Plink process closed with code ${code}`));
                         });
                         resolve();
                     } else {
@@ -161,7 +161,7 @@ export class PlinkSerialSession extends BaseSession {
 
     public async disconnect(): Promise<void> {
         if (this.process) {
-            console.log(chalk.dim('[PlinkSerial]: Detaching sub-process pipelines...'));
+            console.log(chalk.gray(`❯ Detaching sub-process pipelines...`));
             this.process.kill('SIGTERM');
             this.process = null;
         }

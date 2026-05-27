@@ -1,4 +1,5 @@
 import { BaseSession } from '../../infrastructure/protocols/BaseSession';
+import chalk from 'chalk';
 
 export class TransactionManager {
     private configChangeLog: string[] = [];
@@ -12,37 +13,37 @@ export class TransactionManager {
         const state = session.getState();
         
         if (state.currentMode === 'USER_EXEC') {
-            console.log('[TransactionManager]: Elevating to privileged mode for backup...');
+            console.log(chalk.cyan('❯ Elevating to privileged mode for backup...'));
             await session.execute('enable');
         }
 
         try {
-            console.log('[TransactionManager]: Checking flash storage reachability...');
+            console.log(chalk.cyan('❯ Checking flash storage reachability...'));
             const flashCheck = await session.execute('dir flash:');
             if (flashCheck.includes('% Invalid') || flashCheck.includes('No such file') || flashCheck.includes('Error')) {
-                console.warn('[TransactionManager Warning]: Flash storage is not accessible or not found. Skipping backup creation.');
+                console.warn(chalk.yellow('⚠ Flash storage is not accessible or not found. Skipping backup creation.'));
                 return;
             }
 
-            console.log('[TransactionManager]: Creating device running-config backup on flash...');
+            console.log(chalk.cyan('❯ Creating device running-config backup on flash...'));
             const rawOutput = await session.execute(`copy running-config ${this.backupFilename}`);
             
             if (rawOutput.includes('Destination filename') || rawOutput.includes('?')) {
                 const confirmOutput = await session.execute('');
                 if (confirmOutput.includes('copied') || confirmOutput.includes('OK')) {
                     this.backupCreated = true;
-                    console.log('[TransactionManager]: Running configuration backup successfully created.');
+                    console.log(chalk.green('✔ Running configuration backup successfully created.'));
                 } else {
-                    console.warn('[TransactionManager Warning]: Backup confirmation response did not confirm copy completion.');
+                    console.warn(chalk.yellow('⚠ Backup confirmation response did not confirm copy completion.'));
                 }
             } else if (rawOutput.includes('copied') || rawOutput.includes('OK')) {
                 this.backupCreated = true;
-                console.log('[TransactionManager]: Running configuration backup successfully created.');
+                console.log(chalk.green('✔ Running configuration backup successfully created.'));
             } else {
-                console.warn('[TransactionManager Warning]: Failed to backup running-config. Flash may be missing or read-only.');
+                console.warn(chalk.yellow('⚠ Failed to backup running-config. Flash may be missing or read-only.'));
             }
         } catch (err: any) {
-            console.warn(`[TransactionManager Warning]: Backup creation skipped/failed: ${err.message}`);
+            console.warn(chalk.yellow(`⚠ Backup creation skipped/failed: ${err.message}`));
         }
     }
 
@@ -50,7 +51,6 @@ export class TransactionManager {
         const clean = command.trim();
         const lower = clean.toLowerCase();
 
-     
         if (lower.startsWith('interface ') || lower.startsWith('int ')) {
             const parts = clean.split(/\s+/);
             if (parts.length >= 2) {
@@ -85,7 +85,6 @@ export class TransactionManager {
             this.targetInterface = null;
         }
 
-      
         if (this.isMutational(clean)) {
             this.configChangeLog.push(clean);
             this.mutationsWithContext.push({
@@ -112,7 +111,7 @@ export class TransactionManager {
     }
 
     public async executeRollback(session: BaseSession): Promise<string> {
-        console.warn('[TransactionManager]: Safety rollback triggered!');
+        console.warn(chalk.red('⚠ Safety rollback triggered!'));
 
         const snapshotCapableSession = session as BaseSession & {
             hasSnapshots?: () => boolean;
@@ -121,20 +120,20 @@ export class TransactionManager {
         };
 
         if (snapshotCapableSession.restoreBackupSnapshot?.()) {
-            console.log('[TransactionManager]: Mock backup restore completed successfully.');
+            console.log(chalk.green('✔ Mock backup restore completed successfully.'));
             this.clear();
             return 'Mock backup restore completed successfully.';
         }
 
         if (snapshotCapableSession.hasSnapshots?.() && snapshotCapableSession.restoreToInitialSnapshot?.()) {
-            console.log('[TransactionManager]: Mock snapshot restore completed successfully.');
+            console.log(chalk.green('✔ Mock snapshot restore completed successfully.'));
             this.clear();
             return 'Mock snapshot restore completed successfully.';
         }
         
         if (this.backupCreated) {
             try {
-                console.warn(`[TransactionManager]: Restoring running configuration atomically using ${this.backupFilename}...`);
+                console.warn(chalk.cyan(`❯ Restoring running configuration atomically using ${this.backupFilename}...`));
                 
                 const state = session.getState();
                 if (state.currentMode === 'USER_EXEC') {
@@ -145,23 +144,22 @@ export class TransactionManager {
                 
                 const restoreOutput = await session.execute(`configure replace ${this.backupFilename} force`);
                 if (!restoreOutput.includes('% Invalid') && !restoreOutput.includes('Unrecognized')) {
-                    console.log('[TransactionManager]: Atomic restore completed successfully.');
+                    console.log(chalk.green('✔ Atomic restore completed successfully.'));
                     this.clear();
                     return restoreOutput;
                 }
-                console.warn('[TransactionManager]: configure replace failed/unsupported. Falling back to command inversion.');
+                console.warn(chalk.yellow('⚠ configure replace failed/unsupported. Falling back to command inversion.'));
             } catch (err: any) {
-                console.warn(`[TransactionManager Warning]: Atomic replace failed: ${err.message}. Falling back to command inversion.`);
+                console.warn(chalk.yellow(`⚠ Atomic replace failed: ${err.message}. Falling back to command inversion.`));
             }
         }
 
-        console.warn(`[TransactionManager]: Executing manual inversion for ${this.mutationsWithContext.length} mutations...`);
+        console.warn(chalk.cyan(`❯ Executing manual inversion for ${this.mutationsWithContext.length} mutations...`));
         let rollbackSequence: string[] = ['configure terminal'];
         let currentRollbackContext: string[] = [];
 
         for (const item of [...this.mutationsWithContext].reverse()) {
             const targetStack = item.contextStack;
-
 
             let needsReentry = false;
             if (currentRollbackContext.length !== targetStack.length) {
@@ -210,7 +208,7 @@ export class TransactionManager {
 
         let summary = '';
         for (const rollbackCmd of rollbackSequence) {
-            console.log(`[TransactionManager Rollback]: Executing "${rollbackCmd}"`);
+            console.log(chalk.gray(`❯ Rollback: Executing "${rollbackCmd}"`));
             summary += await session.execute(rollbackCmd);
         }
         

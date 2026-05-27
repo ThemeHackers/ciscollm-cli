@@ -1,6 +1,7 @@
 import { BaseSession } from '../../infrastructure/protocols/BaseSession';
 import { NetworkTopology, SessionState, TopologyLink } from '../../shared/types';
 import { TopologyDiscovery } from '../topology/TopologyDiscovery';
+import chalk from 'chalk';
 
 export class MultiAgentCoordinator {
     private sessions: Map<string, BaseSession> = new Map();
@@ -15,11 +16,11 @@ export class MultiAgentCoordinator {
     }
 
     public async connectAll(): Promise<void> {
-        console.log(`[MultiAgentCoordinator]: Establishing connections to ${this.sessions.size} devices in parallel...`);
+        console.log(chalk.cyan(`❯ Establishing parallel connections to ${this.sessions.size} target device(s)...`));
         const promises = Array.from(this.sessions.entries()).map(async ([id, session]) => {
             try {
                 await session.connect();
-                console.log(`[MultiAgentCoordinator]: Device "${id}" connected successfully.`);
+                console.log(chalk.green(`✔ Device "${id}" connected successfully.`));
             } catch (err: any) {
                 throw new Error(`Device "${id}" failed to connect: ${err.message}`);
             }
@@ -109,13 +110,13 @@ export class MultiAgentCoordinator {
     }
 
     public async disconnectAll(): Promise<void> {
-        console.log('[MultiAgentCoordinator]: Terminating all device connection channels...');
+        console.log(chalk.cyan('❯ Terminating all connection channels...'));
         for (const [id, session] of this.sessions.entries()) {
             try {
                 await session.disconnect();
-                console.log(`[MultiAgentCoordinator]: Device "${id}" disconnected cleanly.`);
+                console.log(chalk.green(`✔ Device "${id}" disconnected cleanly.`));
             } catch (err: any) {
-                console.error(`[MultiAgentCoordinator Warning]: Device "${id}" failed to close cleanly: ${err.message}`);
+                console.warn(chalk.yellow(`⚠ Device "${id}" failed to close cleanly: ${err.message}`));
             }
         }
         this.sessions.clear();

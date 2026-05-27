@@ -148,7 +148,17 @@ const role3 = HierarchicalAgentManager.routeCommand('interface GigabitEthernet0/
 assert.strictEqual(role3, 'ACCESS', 'Interface commands should be routed to ACCESS agent');
 console.log(' -> HierarchicalAgentManager test passed.');
 
-console.log('\n[Test 8]: Evaluating PreExecutionValidator...');
+console.log('\n[Test 8]: Evaluating Cisco command classifier...');
+const commandClassifier = (agentLoop as any).classifyCommand.bind(agentLoop);
+assert.strictEqual(commandClassifier('show ip interface brief'), 'inspection', 'Show commands should be classified as inspection');
+assert.strictEqual(commandClassifier('show cdp neighbors detail'), 'inspection', 'Neighbor discovery shows should be classified as inspection');
+assert.strictEqual(commandClassifier('interface GigabitEthernet0/1'), 'configuration', 'Interface commands should be classified as configuration');
+assert.strictEqual(commandClassifier('router ospf 1'), 'configuration', 'Routing process commands should be classified as configuration');
+assert.strictEqual(commandClassifier('ip access-list extended MGMT'), 'configuration', 'ACL configuration should be classified as configuration');
+assert.strictEqual(commandClassifier('terminal shell'), 'configuration', 'IOS shell activation should be classified as configuration');
+console.log(' -> Cisco command classifier test passed.');
+
+console.log('\n[Test 9]: Evaluating PreExecutionValidator...');
 const mockTopology = {
     devices: [{ id: 'Switch1', type: 'switch' as any, interfaces: [] }, { id: 'Router1', type: 'router' as any, interfaces: [] }],
     links: [{
@@ -169,7 +179,7 @@ assert.strictEqual(val2.safe, false, 'Shutting down active link should be flagge
 assert.strictEqual(val2.warnLevel, 'CRITICAL', 'Warning should be CRITICAL');
 console.log(' -> PreExecutionValidator test passed.');
 
-console.log('\n[Test 9]: Evaluating StateDiff...');
+console.log('\n[Test 10]: Evaluating StateDiff...');
 const beforeSnap = {
     deviceId: 'Router1',
     timestamp: '2026-05-27T00:00:00Z',

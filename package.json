@@ -1,6 +1,6 @@
 {
   "name": "ciscollm-cli",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Cisco IOS automation agent CLI with mock simulation, guardrails, and LLM tool-calling support.",
   "main": "dist/index.js",
   "bin": {
@@ -37,12 +37,14 @@
     "inquirer": "^8.2.6",
     "ora": "^5.4.1",
     "pdf-parse": "^2.4.5",
-    "ssh2": "^1.15.0"
+    "ssh2": "^1.15.0",
+    "xml2js": "^0.6.2"
   },
   "devDependencies": {
     "@types/inquirer": "^8.2.10",
     "@types/node": "^20.12.7",
     "@types/ssh2": "^1.15.0",
+    "@types/xml2js": "^0.4.14",
     "ts-node": "^10.9.2",
     "typescript": "^5.4.5"
   }

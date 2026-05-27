@@ -56,26 +56,34 @@ Mock mode (`--protocol mock`) provides a stateful simulation of a Cisco IOS devi
 Before executing any state-mutating command, the agent runs a dry-run check against the known network topology:
 * **Topology Awareness:** Analyzes active physical/logical links between core, distribution, and access segments.
 * **Accidental Disruption Prevention:** Detects and intercepts commands that could accidentally shut down critical uplink ports or neighbor nodes, ensuring continuous uptime.
+* **Inspection Throttling:** Repeated inspection commands such as `show ip interface brief` are not treated as a harmful loop, but repeated configuration retries still are.
 
-### 8. 📊 Live Configuration State Diff Engine
+### 8. 🧠 Prompt Discipline for Safe Change Windows
+The agent prompt now follows a tighter inspection/configuration/verification flow:
+* **Single Pre-Check:** Perform one inspection pass before a configuration block instead of repeatedly polling the same status command.
+* **Configuration Block:** Apply the requested changes as a focused sequence of commands.
+* **Single Verification Pass:** Verify the applied change once with `show` or `ping_test`, then stop if the result is clean.
+
+### 9. 📊 Live Configuration State Diff Engine
 Maintains deep visibility of system modifications:
 * **Before/After Snapshots:** Takes memory-efficient snapshots of device interfaces, IP addresses, subnets, routing tables, and active VLAN databases before and after executing any command.
 * **Visual Colorized Diffs:** Automatically outputs a structured difference report highlighting additions in green, removals in red, and updates/modifications in yellow.
 
-### 9. 🪵 Continuous Enterprise Audit Trails
+### 10. 🪵 Continuous Enterprise Audit Trails
 Ensures accountability for automated activities:
 * **Detailed Logs:** Generates structured records containing the timestamp, target device, active agent role, LLM reasoning thoughts, executed commands, and final output status.
 * **Local Audit Store:** Persists all interactions locally to `audit.log` for easy integration with standard security information and event management (SIEM) systems.
 
-### 10. 🔀 Hierarchical Network Swarms
+### 11. 🔀 Hierarchical Network Swarms
 Supports role-specific command delegation and intelligence:
 * **Role Routing:** Multi-agent coordinator routes tasks to specialized personalities—**Core Agent**, **Distribution Agent**, and **Access Agent**—matching the logical tier of the configuration task.
 * **RBAC Constraints:** Restricts operations according to the `--rbac-role` parameter. The `read_only` role safely blocks any modifying actions and logs violations to the audit log.
 
-### 11. 🔌 NETCONF & CML Simulation Adapters
+### 12. 🔌 NETCONF & CML Simulation Adapters
 Extends sandbox capabilities beyond local mock devices:
 * **Cisco Modeling Labs (CML):** Provides sessions to interact directly with digital twin network simulations.
 * **NETCONF XML Sessions:** Supports programmatic configuration using structured XML RPC calls and YANG schemas.
+* **NETCONF SSH Auth:** Supports username/password, SSH private key, passphrase, and NETCONF timeout tuning for real devices.
 
 ---
 
@@ -114,6 +122,13 @@ ciscollm run [options]
 | `--port <port>` | - | Target connection port. | - |
 | `-u, --username <name>` | - | Device login username. | - |
 | `-p, --password <pass>` | - | Device login password. | - |
+| `--env-password` | - | Read the device password from the `CISCOLLM_PASS` environment variable. | `false` |
+| `--private-key <path>` | - | SSH private key file path for SSH and NETCONF sessions. | - |
+| `--passphrase <passphrase>` | - | Passphrase for the SSH private key file. | - |
+| `--netconf-ready-timeout <ms>` | - | NETCONF SSH ready timeout in milliseconds. | `20000` |
+| `--netconf-hello-timeout <ms>` | - | NETCONF hello exchange timeout in milliseconds. | `15000` |
+| `--netconf-rpc-timeout <ms>` | - | NETCONF RPC response timeout in milliseconds. | `15000` |
+| `--netconf-keepalive-interval <ms>` | - | NETCONF SSH keepalive interval in milliseconds. | `10000` |
 | `--strict-command-ref` | - | Block commands not found in the `cf_command_ref.pdf` index. | `false` |
 | `--no-ref-telemetry` | - | Disable command-reference warmup telemetry logs. | `false` |
 | `--non-interactive` | - | Run without interactive prompts (auto-rejects dangerous commands). | `false` |
@@ -147,6 +162,17 @@ ciscollm run --provider cloud --api-key YOUR_OPENROUTER_API_KEY --protocol mock 
 ### 5. Enforcing Strict Validation Mode
 ```bash
 ciscollm run --strict-command-ref --protocol mock --goal "Configure router ospf 1 and advertise network 192.168.1.0/24"
+```
+
+### 6. NETCONF Session with SSH Key Auth
+```bash
+ciscollm run --protocol netconf --host 192.168.1.188 --port 830 --username admin --private-key C:\\Users\\me\\.ssh\\id_rsa --passphrase YOUR_PASSPHRASE --netconf-rpc-timeout 20000 --goal "Show running configuration"
+```
+
+### 7. NETCONF Session with Password from Environment
+```bash
+$env:CISCOLLM_PASS = '!@admin1234'
+ciscollm run --protocol netconf --host 192.168.1.188 --username admin --env-password --goal "Show interface brief"
 ```
 
 ---

@@ -27,7 +27,7 @@ export class SshSession extends BaseSession {
             this.client = new Client();
             
             this.client.on('ready', () => {
-                console.log(chalk.dim('[SshSession]: SSH connection ready. Launching interactive shell...'));
+                console.log(chalk.cyan(`❯ SSH connection ready to host ${this.config.host}. Launching interactive shell...`));
                 this.client!.shell((err, stream) => {
                     if (err) {
                         return reject(new Error(`Failed to open SSH shell channel: ${err.message}`));
@@ -37,7 +37,7 @@ export class SshSession extends BaseSession {
                     this.channel.on('data', (data: Buffer) => this.handleData(data));
                     
                     this.channel.on('close', () => {
-                        console.log(chalk.dim('[SshSession]: SSH channel closed.'));
+                        console.log(chalk.gray(`❯ SSH channel closed.`));
                     });
 
                     
@@ -46,9 +46,9 @@ export class SshSession extends BaseSession {
                         if (match) {
                             this.updateStateFromPrompt(match[1]);
                         }
-                        console.log(chalk.dim(`[SshSession]: Disabling pagination with 'terminal length 0'...`));
+                        console.log(chalk.cyan(`❯ Disabling pagination with 'terminal length 0'...`));
                         await this.execute('terminal length 0').catch(err => {
-                            console.warn(chalk.dim(`[SshSession Warning]: Failed to set terminal length 0: ${err.message}`));
+                            console.warn(chalk.yellow(`⚠ Failed to set terminal length 0: ${err.message}`));
                         });
                         resolve();
                     }, 2000);
@@ -123,6 +123,6 @@ export class SshSession extends BaseSession {
             this.client.end();
             this.client = null;
         }
-        console.log(chalk.dim('[SshSession]: SSH Session disconnected cleanly.'));
+        console.log(chalk.green(`✔ SSH Session to ${this.config.host} disconnected cleanly.`));
     }
 }
