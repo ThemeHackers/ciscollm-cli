@@ -54,7 +54,55 @@ export class LLMClient {
                 temperature: 0.1
             }, { headers });
 
-            return response.data.choices[0].message;
+            const message = response.data.choices[0].message;
+            if (message && message.content && (!message.tool_calls || message.tool_calls.length === 0)) {
+                const content = message.content;
+                if (content.includes('<tool_code>') || content.includes('<tool_call>') || content.includes('<parameter=')) {
+                    const paramRegex = /<parameter=(\w+)>\s*([\s\S]*?)\s*<\/parameter>/g;
+                    const args: Record<string, any> = {};
+                    let match;
+                    while ((match = paramRegex.exec(content)) !== null) {
+                        const key = match[1];
+                        const val = match[2].trim();
+                        args[key] = val;
+                    }
+
+                    if (Object.keys(args).length > 0) {
+                        let toolName = 'execute_ios_command';
+                        if ('destination' in args) {
+                            toolName = 'ping_test';
+                        } else if ('mode' in args) {
+                            toolName = 'enable_ios_shell';
+                        } else if ('name' in args && 'value' in args) {
+                            toolName = 'define_shell_variable';
+                        } else if ('variable' in args && 'items' in args && 'command' in args) {
+                            toolName = 'execute_shell_loop';
+                            if (typeof args.items === 'string') {
+                                try {
+                                    args.items = JSON.parse(args.items);
+                                } catch {
+                                    args.items = args.items.split(/\s+/).filter(Boolean);
+                                }
+                            }
+                        } else if ('name' in args && 'body' in args) {
+                            toolName = 'define_shell_function';
+                        }
+
+                        message.tool_calls = [
+                            {
+                                id: `parsed_${Math.random().toString(36).substring(2, 11)}`,
+                                type: 'function',
+                                function: {
+                                    name: toolName,
+                                    arguments: JSON.stringify(args)
+                                }
+                            }
+                        ];
+                    }
+                }
+            }
+
+            return message;
         } catch (error: any) {
             let details = error.message;
             if (error.response && error.response.data) {

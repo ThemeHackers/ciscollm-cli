@@ -130,6 +130,7 @@ export class MockSession extends BaseSession {
             { pattern: ['configure', 'replace'], action: (command) => this.handleConfigureReplace(command) },
             { pattern: ['interface'], action: (command) => this.handleInterfaceCommand(command) },
             { pattern: ['vlan'], action: (command) => this.handleVlanCommand(command) },
+            { pattern: ['switchport'], action: () => '' },
             { pattern: ['exit'], action: () => this.handleExitCommand() },
             { pattern: ['end'], action: () => this.handleEndCommand() },
             { pattern: ['ip', 'address'], action: (command) => this.handleIpAddressCommand(command) },
@@ -153,11 +154,12 @@ export class MockSession extends BaseSession {
             { pattern: ['network'], action: () => '' },
             { pattern: ['ip', 'ospf'], action: () => '' },
             { pattern: ['ip', 'dhcp', 'pool'], action: (command) => this.handleIpDhcpPool(command) },
+            { pattern: ['ip', 'pool'], action: (command) => this.handleIpDhcpPool(command) },
             { pattern: ['default-router'], action: () => '' },
             { pattern: ['dns-server'], action: () => '' },
             { pattern: ['ip', 'dhcp', 'excluded-address'], action: () => '' },
             { pattern: ['access-list'], action: () => '' },
-            { pattern: ['ip', 'access-list'], action: () => '' },
+            { pattern: ['ip', 'access-list'], action: (command) => this.handleIpAccessList(command) },
             { pattern: ['ip', 'access-group'], action: () => '' },
             { pattern: ['permit'], action: () => '' },
             { pattern: ['deny'], action: () => '' },
@@ -489,10 +491,10 @@ export class MockSession extends BaseSession {
             return this.formatIncompleteCommand(command);
         }
 
-        const intName = parts[1];
+        const intName = parts.slice(1).join('');
         const resolvedName = this.resolveInterfaceName(intName);
         if (!resolvedName) {
-            return this.formatBadInterfaceParameter(command, intName);
+            return this.formatBadInterfaceParameter(command, parts[1]);
         }
 
         if (!this.interfaces.has(resolvedName)) {
@@ -505,7 +507,7 @@ export class MockSession extends BaseSession {
                     description: null
                 });
             } else {
-                return this.formatBadInterfaceParameter(command, intName);
+                return this.formatBadInterfaceParameter(command, parts[1]);
             }
         }
 
@@ -529,7 +531,7 @@ export class MockSession extends BaseSession {
     }
 
     private handleExitCommand(): string {
-        if (this.state.prompt.includes('(config-router)') || this.state.prompt.includes('(dhcp-config)')) {
+        if (this.state.prompt.includes('(') && !this.state.prompt.includes('(config-if)')) {
             this.updateMode('GLOBAL_CONFIG');
             return '';
         }
@@ -723,7 +725,7 @@ export class MockSession extends BaseSession {
     }
 
     private handleIpRouteCommand(command: string): string {
-        if (this.state.currentMode !== 'GLOBAL_CONFIG') {
+        if (this.state.currentMode !== 'GLOBAL_CONFIG' && this.state.currentMode !== 'INTERFACE_CONFIG') {
             return this.formatInvalidInput(command, 0);
         }
 
@@ -989,6 +991,15 @@ export class MockSession extends BaseSession {
         }
         this.updateMode('GLOBAL_CONFIG');
         this.state.prompt = `${this.state.hostname}(dhcp-config)#`;
+        return '';
+    }
+
+    private handleIpAccessList(command: string): string {
+        if (this.state.currentMode !== 'GLOBAL_CONFIG') {
+            return '% Command rejected: Place in Global Config mode first.';
+        }
+        this.updateMode('GLOBAL_CONFIG');
+        this.state.prompt = `${this.state.hostname}(config-ext-nacl)#`;
         return '';
     }
 }
