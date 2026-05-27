@@ -52,6 +52,31 @@ Mock mode (`--protocol mock`) provides a stateful simulation of a Cisco IOS devi
 * **Output Filtering (Pipes):** Supports standard IOS output piping such as `| include`, `| grep`, `| exclude`, and `| begin`.
 * **Network Testing:** Simulates latency and ICMP ping responses.
 
+### 7. 🛡️ Pre-Execution Safety Validation (Dry-Run Check)
+Before executing any state-mutating command, the agent runs a dry-run check against the known network topology:
+* **Topology Awareness:** Analyzes active physical/logical links between core, distribution, and access segments.
+* **Accidental Disruption Prevention:** Detects and intercepts commands that could accidentally shut down critical uplink ports or neighbor nodes, ensuring continuous uptime.
+
+### 8. 📊 Live Configuration State Diff Engine
+Maintains deep visibility of system modifications:
+* **Before/After Snapshots:** Takes memory-efficient snapshots of device interfaces, IP addresses, subnets, routing tables, and active VLAN databases before and after executing any command.
+* **Visual Colorized Diffs:** Automatically outputs a structured difference report highlighting additions in green, removals in red, and updates/modifications in yellow.
+
+### 9. 🪵 Continuous Enterprise Audit Trails
+Ensures accountability for automated activities:
+* **Detailed Logs:** Generates structured records containing the timestamp, target device, active agent role, LLM reasoning thoughts, executed commands, and final output status.
+* **Local Audit Store:** Persists all interactions locally to `audit.log` for easy integration with standard security information and event management (SIEM) systems.
+
+### 10. 🔀 Hierarchical Network Swarms
+Supports role-specific command delegation and intelligence:
+* **Role Routing:** Multi-agent coordinator routes tasks to specialized personalities—**Core Agent**, **Distribution Agent**, and **Access Agent**—matching the logical tier of the configuration task.
+* **RBAC Constraints:** Restricts operations according to the `--rbac-role` parameter. The `read_only` role safely blocks any modifying actions and logs violations to the audit log.
+
+### 11. 🔌 NETCONF & CML Simulation Adapters
+Extends sandbox capabilities beyond local mock devices:
+* **Cisco Modeling Labs (CML):** Provides sessions to interact directly with digital twin network simulations.
+* **NETCONF XML Sessions:** Supports programmatic configuration using structured XML RPC calls and YANG schemas.
+
 ---
 
 ## 📦 Installation
@@ -77,7 +102,7 @@ ciscollm run [options]
 | Option / Flag | Alias | Description | Default Value |
 |---|---|---|---|
 | `-g, --goal <intent>` | - | The goal of the configuration/troubleshooting task. If not specified, launches the Interactive Setup Wizard. | - |
-| `--protocol <type>` | - | Connection protocol (`serial`, `ssh`, `telnet`, `mock`). | `serial` |
+| `--protocol <type>` | - | Connection protocol (`serial`, `ssh`, `telnet`, `mock`, `netconf`, `cml`). | `serial` |
 | `--provider <type>` | - | LLM provider mode (`local`, `cloud`). | `local` |
 | `--local-type <type>` | - | Local LLM server flavor (`ollama`, `lmstudio`). | `ollama` |
 | `--model <name>` | - | Name of the LLM model to compile. | - |
@@ -92,6 +117,7 @@ ciscollm run [options]
 | `--strict-command-ref` | - | Block commands not found in the `cf_command_ref.pdf` index. | `false` |
 | `--no-ref-telemetry` | - | Disable command-reference warmup telemetry logs. | `false` |
 | `--non-interactive` | - | Run without interactive prompts (auto-rejects dangerous commands). | `false` |
+| `--rbac-role <role>` | - | Specify the Active Agent RBAC authorization role (`admin`, `read_only`). | `admin` |
 
 ---
 
