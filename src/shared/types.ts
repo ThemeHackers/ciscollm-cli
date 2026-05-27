@@ -23,3 +23,17 @@ export interface ToolCall {
         arguments: string;
     };
 }
+
+export interface TopologyLink {
+    localDeviceId: string;
+    localInterface: string;
+    remoteDeviceId: string;
+    remoteInterface: string;
+    protocol: 'cdp' | 'lldp';
+}
+
+export interface NetworkTopology {
+    discoveredAt: string;
+    nodes: string[];
+    links: TopologyLink[];
+}
