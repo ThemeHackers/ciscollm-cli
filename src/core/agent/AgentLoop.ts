@@ -7,7 +7,7 @@ import { PromptEngine } from './PromptEngine';
 import { CommandReferenceEngine } from './CommandReferenceEngine';
 import { ChatMessage, ToolCall } from '../../shared/types';
 import { CiscoAgentTools } from '../../infrastructure/llm/ToolDefinitions';
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import { logger, createSpinner } from '../../cli/ui/ui';
 import chalk from 'chalk';
 import { PreExecutionValidator } from '../guardrails/PreExecutionValidator';
@@ -734,9 +734,9 @@ export class CiscoAgentLoop {
     private async pingFromHost(destination: string): Promise<string> {
         return new Promise((resolve) => {
             const isWindows = process.platform === 'win32';
-            const cmd = isWindows ? `ping -n 4 ${destination}` : `ping -c 4 ${destination}`;
+            const pingArgs = isWindows ? ['-n', '4', destination] : ['-c', '4', destination];
             
-            exec(cmd, (error, stdout, stderr) => {
+            execFile('ping', pingArgs, (error, stdout, stderr) => {
                 if (error) {
                     resolve(`PING FAILED:\n${stdout || stderr || error.message}`);
                     return;
