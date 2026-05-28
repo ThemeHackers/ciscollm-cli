@@ -31,6 +31,8 @@ interface MockSnapshot {
     shellVariables: Map<string, string>;
     shellFunctions: Map<string, string>;
     routes: RoutingEntry[];
+    activeVlan: number | null;
+    vlanNames: Map<number, string>;
 }
 
 export class MockSession extends BaseSession {
@@ -41,6 +43,8 @@ export class MockSession extends BaseSession {
     private shellVariables: Map<string, string> = new Map();
     private shellFunctions: Map<string, string> = new Map();
     private routes: RoutingEntry[] = [];
+    private activeVlan: number | null = null;
+    private vlanNames: Map<number, string> = new Map();
     private backupSnapshot: MockSnapshot | null = null;
     private rollbackSnapshots: MockSnapshot[] = [];
     private readonly commandPatterns: Array<{ pattern: CommandTokenPattern; action: (command: string, lower: string) => string | null }>;
@@ -59,7 +63,9 @@ export class MockSession extends BaseSession {
                 shellFunctions: Array.from(this.shellFunctions.entries()),
                 routes: this.routes,
                 state: this.state,
-                activeInterface: this.activeInterface
+                activeInterface: this.activeInterface,
+                activeVlan: this.activeVlan,
+                vlanNames: Array.from(this.vlanNames.entries())
             };
             fs.writeFileSync(this.getStateFilePath(), JSON.stringify(data, null, 2), 'utf8');
         } catch (e) {
@@ -80,6 +86,8 @@ export class MockSession extends BaseSession {
                 this.routes = data.routes;
                 this.state = data.state;
                 this.activeInterface = data.activeInterface;
+                this.activeVlan = data.activeVlan || null;
+                this.vlanNames = new Map(data.vlanNames || []);
             }
         } catch (e) {
            
@@ -131,6 +139,7 @@ export class MockSession extends BaseSession {
             { pattern: ['configure', 'replace'], action: (command) => this.handleConfigureReplace(command) },
             { pattern: ['interface'], action: (command) => this.handleInterfaceCommand(command) },
             { pattern: ['vlan'], action: (command) => this.handleVlanCommand(command) },
+            { pattern: ['name'], action: (command) => this.handleVlanNameCommand(command) },
             { pattern: ['switchport'], action: () => '' },
             { pattern: ['exit'], action: () => this.handleExitCommand() },
             { pattern: ['end'], action: () => this.handleEndCommand() },
@@ -376,6 +385,7 @@ export class MockSession extends BaseSession {
         if (mode === 'PRIVILEGED_EXEC') suffix = '#';
         else if (mode === 'GLOBAL_CONFIG') suffix = '(config)#';
         else if (mode === 'INTERFACE_CONFIG') suffix = `(config-if)#`;
+        else if (mode === 'VLAN_CONFIG') suffix = `(config-vlan)#`;
         
         this.state.prompt = `${this.state.hostname}${suffix}`;
     }
@@ -404,6 +414,10 @@ export class MockSession extends BaseSession {
         }
 
         return true;
+    }
+
+    private isConfigMode(): boolean {
+        return this.state.currentMode !== 'USER_EXEC' && this.state.currentMode !== 'PRIVILEGED_EXEC';
     }
 
     private formatInvalidInput(command: string, caretIndex: number): string {
@@ -483,7 +497,7 @@ export class MockSession extends BaseSession {
     }
 
     private handleInterfaceCommand(command: string): string {
-        if (this.state.currentMode !== 'GLOBAL_CONFIG' && this.state.currentMode !== 'INTERFACE_CONFIG') {
+        if (!this.isConfigMode()) {
             return this.formatInvalidInput(command, 0);
         }
 
@@ -513,25 +527,54 @@ export class MockSession extends BaseSession {
         }
 
         this.activeInterface = resolvedName;
+        this.activeVlan = null;
         this.updateMode('INTERFACE_CONFIG');
         return '';
     }
 
     private handleVlanCommand(command: string): string {
-        if (this.state.currentMode !== 'GLOBAL_CONFIG') {
+        if (!this.isConfigMode()) {
             return this.formatInvalidInput(command, 0);
         }
 
         const parts = command.trim().split(/\s+/);
+        if (parts.length > 2) {
+            return this.formatInvalidInput(command, command.indexOf(parts[2]));
+        }
+
         const vlanId = parseInt(parts[1], 10);
         if (isNaN(vlanId)) {
             return `${command}\n${' '.repeat(command.indexOf(parts[1] || ''))}^\n% Invalid VLAN ID format.`;
         }
         this.vlans.add(vlanId);
+        this.activeVlan = vlanId;
+        this.activeInterface = null;
+        this.updateMode('VLAN_CONFIG');
+        return '';
+    }
+
+    private handleVlanNameCommand(command: string): string {
+        if (this.state.currentMode !== 'VLAN_CONFIG' || this.activeVlan === null) {
+            return this.formatInvalidInput(command, 0);
+        }
+
+        const parts = command.trim().split(/\s+/);
+        if (parts.length < 2) {
+            return this.formatIncompleteCommand(command);
+        }
+
+        this.pushRollbackSnapshot();
+        const vlanName = parts.slice(1).join(' ');
+        this.vlanNames.set(this.activeVlan, vlanName);
         return '';
     }
 
     private handleExitCommand(): string {
+        if (this.state.currentMode === 'VLAN_CONFIG') {
+            this.activeVlan = null;
+            this.updateMode('GLOBAL_CONFIG');
+            return '';
+        }
         if (this.state.prompt.includes('(') && !this.state.prompt.includes('(config-if)')) {
             this.updateMode('GLOBAL_CONFIG');
             return '';
@@ -553,8 +596,9 @@ export class MockSession extends BaseSession {
     }
 
     private handleEndCommand(): string {
-        if (this.state.currentMode === 'GLOBAL_CONFIG' || this.state.currentMode === 'INTERFACE_CONFIG' || this.state.prompt.includes(')')) {
+        if (this.state.currentMode === 'GLOBAL_CONFIG' || this.state.currentMode === 'INTERFACE_CONFIG' || this.state.currentMode === 'VLAN_CONFIG' || this.state.prompt.includes(')')) {
             this.activeInterface = null;
+            this.activeVlan = null;
             this.updateMode('PRIVILEGED_EXEC');
             return '';
         }
@@ -667,7 +711,8 @@ export class MockSession extends BaseSession {
     private handleShowVlanBrief(): string {
         let output = 'VLAN Name                             Status    Ports\n';
         for (const vlanId of this.vlans.values()) {
-            output += `${String(vlanId).padEnd(5)} default                          active    \n`;
+            const name = this.vlanNames.get(vlanId) || (vlanId === 1 ? 'default' : `VLAN${String(vlanId).padStart(4, '0')}`);
+            output += `${String(vlanId).padEnd(5)} ${name.padEnd(32)} active    \n`;
         }
         return output;
     }
@@ -726,7 +771,7 @@ export class MockSession extends BaseSession {
     }
 
     private handleIpRouteCommand(command: string): string {
-        if (this.state.currentMode !== 'GLOBAL_CONFIG' && this.state.currentMode !== 'INTERFACE_CONFIG') {
+        if (!this.isConfigMode()) {
             return this.formatInvalidInput(command, 0);
         }
 
@@ -819,7 +864,9 @@ export class MockSession extends BaseSession {
             shellEnabled: this.shellEnabled,
             shellVariables: new Map(this.shellVariables),
             shellFunctions: new Map(this.shellFunctions),
-            routes: this.routes.map(route => ({ ...route }))
+            routes: this.routes.map(route => ({ ...route })),
+            activeVlan: this.activeVlan,
+            vlanNames: new Map(this.vlanNames)
         };
     }
 
@@ -832,6 +879,8 @@ export class MockSession extends BaseSession {
         this.shellVariables = new Map(snapshot.shellVariables);
         this.shellFunctions = new Map(snapshot.shellFunctions);
         this.routes = snapshot.routes.map(route => ({ ...route }));
+        this.activeVlan = snapshot.activeVlan;
+        this.vlanNames = new Map(snapshot.vlanNames);
     }
 
     private refreshConnectedRoutes(): void {
@@ -978,27 +1027,33 @@ export class MockSession extends BaseSession {
     }
 
     private handleRouterOspf(command: string): string {
-        if (this.state.currentMode !== 'GLOBAL_CONFIG') {
-            return '% Command rejected: Place in Global Config mode first.';
+        if (!this.isConfigMode()) {
+            return '% Command rejected: Place in configuration mode first.';
         }
+        this.activeInterface = null;
+        this.activeVlan = null;
         this.updateMode('GLOBAL_CONFIG');
         this.state.prompt = `${this.state.hostname}(config-router)#`;
         return '';
     }
 
     private handleIpDhcpPool(command: string): string {
-        if (this.state.currentMode !== 'GLOBAL_CONFIG') {
-            return '% Command rejected: Place in Global Config mode first.';
+        if (!this.isConfigMode()) {
+            return '% Command rejected: Place in configuration mode first.';
         }
+        this.activeInterface = null;
+        this.activeVlan = null;
         this.updateMode('GLOBAL_CONFIG');
         this.state.prompt = `${this.state.hostname}(dhcp-config)#`;
         return '';
     }
 
     private handleIpAccessList(command: string): string {
-        if (this.state.currentMode !== 'GLOBAL_CONFIG') {
-            return '% Command rejected: Place in Global Config mode first.';
+        if (!this.isConfigMode()) {
+            return '% Command rejected: Place in configuration mode first.';
         }
+        this.activeInterface = null;
+        this.activeVlan = null;
         this.updateMode('GLOBAL_CONFIG');
         this.state.prompt = `${this.state.hostname}(config-ext-nacl)#`;
         return '';

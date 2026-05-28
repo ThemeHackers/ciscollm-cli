@@ -51,7 +51,7 @@ export class CommandFirewall {
         if (interfaceMatch) {
             const targetedInterface = interfaceMatch[1].toLowerCase().trim();
             
-            if (this.isProtected(targetedInterface) && normalized.includes('shutdown')) {
+            if (this.isProtected(targetedInterface) && normalized.includes('shutdown') && !normalized.includes('no shutdown')) {
                 return {
                     dangerous: true,
                     reason: `Attempting to shutdown protected management interface: ${interfaceMatch[1]}`

@@ -1,4 +1,4 @@
-export type CiscoDeviceMode = 'USER_EXEC' | 'PRIVILEGED_EXEC' | 'GLOBAL_CONFIG' | 'INTERFACE_CONFIG' | 'UNKNOWN';
+export type CiscoDeviceMode = 'USER_EXEC' | 'PRIVILEGED_EXEC' | 'GLOBAL_CONFIG' | 'INTERFACE_CONFIG' | 'VLAN_CONFIG' | 'UNKNOWN';
 
 export interface SessionState {
     currentMode: CiscoDeviceMode;

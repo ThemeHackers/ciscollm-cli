@@ -51,33 +51,50 @@ export class TransactionManager {
         const clean = command.trim();
         const lower = clean.toLowerCase();
 
-        if (lower.startsWith('interface ') || lower.startsWith('int ')) {
-            const parts = clean.split(/\s+/);
-            if (parts.length >= 2) {
-                if (this.contextStack.length > 0 && this.contextStack[this.contextStack.length - 1].startsWith('interface')) {
+        const submodePrefixes = [
+            { match: ['interface ', 'int '], key: 'interface' },
+            { match: ['router '], key: 'router' },
+            { match: ['line '], key: 'line' },
+            { match: ['vlan '], key: 'vlan' },
+            { match: ['ip dhcp pool ', 'ip dhcp pool'], key: 'dhcp' },
+            { match: ['ip access-list ', 'ip access-list'], key: 'acl' },
+            { match: ['route-map '], key: 'route-map' },
+            { match: ['policy-map '], key: 'policy-map' },
+            { match: ['class-map '], key: 'class-map' }
+        ];
+
+        let matchedKey: string | null = null;
+        let matchedPrefixes: string[] = [];
+
+        for (const item of submodePrefixes) {
+            const found = item.match.find(p => lower.startsWith(p));
+            if (found) {
+                matchedKey = item.key;
+                matchedPrefixes = item.match;
+                break;
+            }
+        }
+
+        if (matchedKey) {
+            if (this.contextStack.length > 0) {
+                const last = this.contextStack[this.contextStack.length - 1].toLowerCase();
+                const lastMatches = matchedPrefixes.some(p => last.startsWith(p));
+                if (lastMatches) {
                     this.contextStack.pop();
                 }
-                this.contextStack.push(`interface ${parts[1]}`);
-                this.targetInterface = parts[1];
-            }
-        } else if (lower.startsWith('router ')) {
-            if (this.contextStack.length > 0 && this.contextStack[this.contextStack.length - 1].startsWith('router')) {
-                this.contextStack.pop();
             }
             this.contextStack.push(clean);
-        } else if (lower.startsWith('line ')) {
-            if (this.contextStack.length > 0 && this.contextStack[this.contextStack.length - 1].startsWith('line')) {
-                this.contextStack.pop();
+            if (matchedKey === 'interface') {
+                const parts = clean.split(/\s+/);
+                this.targetInterface = parts[1] || null;
             }
-            this.contextStack.push(clean);
-        } else if (lower.startsWith('vlan ') && !lower.startsWith('no vlan ')) {
-            if (this.contextStack.length > 0 && this.contextStack[this.contextStack.length - 1].startsWith('vlan')) {
-                this.contextStack.pop();
-            }
-            this.contextStack.push(clean);
         } else if (lower === 'exit') {
             this.contextStack.pop();
-            if (this.contextStack.length === 0 || !this.contextStack[this.contextStack.length - 1].startsWith('interface')) {
+            const last = this.contextStack[this.contextStack.length - 1];
+            if (last && (last.toLowerCase().startsWith('interface ') || last.toLowerCase().startsWith('int '))) {
+                const parts = last.trim().split(/\s+/);
+                this.targetInterface = parts[1] || null;
+            } else {
                 this.targetInterface = null;
             }
         } else if (lower === 'end') {
@@ -107,11 +124,52 @@ export class TransactionManager {
                !lower.startsWith('int ') &&
                !lower.startsWith('router ') &&
                !lower.startsWith('line ') &&
-               !lower.startsWith('vlan ');
+               !lower.startsWith('vlan ') &&
+               !lower.startsWith('ip dhcp pool') &&
+               !lower.startsWith('ip access-list') &&
+               !lower.startsWith('route-map') &&
+               !lower.startsWith('policy-map') &&
+               !lower.startsWith('class-map');
     }
 
-    public async executeRollback(session: BaseSession): Promise<string> {
+    public async executeRollback(session: BaseSession, failedCommand?: string): Promise<string> {
         console.warn(chalk.red('⚠ Safety rollback triggered!'));
+
+        // Capture the state before rollback
+        const stateBeforeRollback = session.getState();
+        const modeBeforeRollback = stateBeforeRollback.currentMode;
+
+        // Clean the context stack from the failed command if applicable
+        const savedContext = [...this.contextStack];
+        if (failedCommand) {
+            const cleanFailed = failedCommand.trim().toLowerCase();
+            const lastContext = savedContext[savedContext.length - 1]?.toLowerCase();
+            if (lastContext) {
+                const submodePrefixes = [
+                    { match: ['interface ', 'int '], key: 'interface' },
+                    { match: ['router '], key: 'router' },
+                    { match: ['line '], key: 'line' },
+                    { match: ['vlan '], key: 'vlan' },
+                    { match: ['ip dhcp pool ', 'ip dhcp pool'], key: 'dhcp' },
+                    { match: ['ip access-list ', 'ip access-list'], key: 'acl' },
+                    { match: ['route-map '], key: 'route-map' },
+                    { match: ['policy-map '], key: 'policy-map' },
+                    { match: ['class-map '], key: 'class-map' }
+                ];
+                let matchedPrefixesForCleaning: string[] = [];
+                for (const item of submodePrefixes) {
+                    const matchesFailed = item.match.some(p => cleanFailed.startsWith(p));
+                    if (matchesFailed) {
+                        matchedPrefixesForCleaning = item.match;
+                        break;
+                    }
+                }
+                const lastMatches = matchedPrefixesForCleaning.some(p => lastContext.startsWith(p));
+                if (lastMatches || cleanFailed === lastContext) {
+                    savedContext.pop();
+                }
+            }
+        }
 
         const snapshotCapableSession = session as BaseSession & {
             hasSnapshots?: () => boolean;
@@ -119,101 +177,120 @@ export class TransactionManager {
             restoreToInitialSnapshot?: () => boolean;
         };
 
+        let rollbackResult = '';
+
         if (snapshotCapableSession.restoreBackupSnapshot?.()) {
             console.log(chalk.green('✔ Mock backup restore completed successfully.'));
+            rollbackResult = 'Mock backup restore completed successfully.';
             this.clear();
-            return 'Mock backup restore completed successfully.';
-        }
-
-        if (snapshotCapableSession.hasSnapshots?.() && snapshotCapableSession.restoreToInitialSnapshot?.()) {
+        } else if (snapshotCapableSession.hasSnapshots?.() && snapshotCapableSession.restoreToInitialSnapshot?.()) {
             console.log(chalk.green('✔ Mock snapshot restore completed successfully.'));
+            rollbackResult = 'Mock snapshot restore completed successfully.';
             this.clear();
-            return 'Mock snapshot restore completed successfully.';
-        }
-        
-        if (this.backupCreated) {
-            try {
-                console.warn(chalk.cyan(`❯ Restoring running configuration atomically using ${this.backupFilename}...`));
-                
-                const state = session.getState();
-                if (state.currentMode === 'USER_EXEC') {
-                    await session.execute('enable');
-                } else if (state.currentMode === 'GLOBAL_CONFIG' || state.currentMode === 'INTERFACE_CONFIG') {
-                    await session.execute('end');
-                }
-                
-                const restoreOutput = await session.execute(`configure replace ${this.backupFilename} force`);
-                if (!restoreOutput.includes('% Invalid') && !restoreOutput.includes('Unrecognized')) {
-                    console.log(chalk.green('✔ Atomic restore completed successfully.'));
-                    this.clear();
-                    return restoreOutput;
-                }
-                console.warn(chalk.yellow('⚠ configure replace failed/unsupported. Falling back to command inversion.'));
-            } catch (err: any) {
-                console.warn(chalk.yellow(`⚠ Atomic replace failed: ${err.message}. Falling back to command inversion.`));
-            }
-        }
-
-        console.warn(chalk.cyan(`❯ Executing manual inversion for ${this.mutationsWithContext.length} mutations...`));
-        let rollbackSequence: string[] = ['configure terminal'];
-        let currentRollbackContext: string[] = [];
-
-        for (const item of [...this.mutationsWithContext].reverse()) {
-            const targetStack = item.contextStack;
-
-            let needsReentry = false;
-            if (currentRollbackContext.length !== targetStack.length) {
-                needsReentry = true;
-            } else {
-                for (let i = 0; i < targetStack.length; i++) {
-                    if (currentRollbackContext[i] !== targetStack[i]) {
-                        needsReentry = true;
-                        break;
+        } else {
+            if (this.backupCreated) {
+                try {
+                    console.warn(chalk.cyan(`❯ Restoring running configuration atomically using ${this.backupFilename}...`));
+                    
+                    const state = session.getState();
+                    if (state.currentMode === 'USER_EXEC') {
+                        await session.execute('enable');
+                    } else if (state.currentMode === 'GLOBAL_CONFIG' || state.currentMode === 'INTERFACE_CONFIG') {
+                        await session.execute('end');
                     }
+                    
+                    const restoreOutput = await session.execute(`configure replace ${this.backupFilename} force`);
+                    if (!restoreOutput.includes('% Invalid') && !restoreOutput.includes('Unrecognized')) {
+                        console.log(chalk.green('✔ Atomic restore completed successfully.'));
+                        rollbackResult = restoreOutput;
+                        this.clear();
+                    } else {
+                        console.warn(chalk.yellow('⚠ configure replace failed/unsupported. Falling back to command inversion.'));
+                    }
+                } catch (err: any) {
+                    console.warn(chalk.yellow(`⚠ Atomic replace failed: ${err.message}. Falling back to command inversion.`));
                 }
             }
 
-            if (needsReentry) {
-                if (currentRollbackContext.length > 0) {
-                    rollbackSequence.push('exit');
+            if (!rollbackResult) {
+                console.warn(chalk.cyan(`❯ Executing manual inversion for ${this.mutationsWithContext.length} mutations...`));
+                let rollbackSequence: string[] = ['configure terminal'];
+                let currentRollbackContext: string[] = [];
+
+                for (const item of [...this.mutationsWithContext].reverse()) {
+                    const targetStack = item.contextStack;
+
+                    let needsReentry = false;
+                    if (currentRollbackContext.length !== targetStack.length) {
+                        needsReentry = true;
+                    } else {
+                        for (let i = 0; i < targetStack.length; i++) {
+                            if (currentRollbackContext[i] !== targetStack[i]) {
+                                needsReentry = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (needsReentry) {
+                        if (currentRollbackContext.length > 0) {
+                            rollbackSequence.push('exit');
+                        }
+                        for (const submode of targetStack) {
+                            rollbackSequence.push(submode);
+                        }
+                        currentRollbackContext = [...targetStack];
+                    }
+
+                    const clean = item.command;
+                    const lower = clean.toLowerCase();
+                    let inverseCmd = '';
+
+                    if (lower.startsWith('ip address') || lower.startsWith('ip add')) {
+                        inverseCmd = 'no ip address';
+                    } else if (lower.startsWith('shutdown')) {
+                        inverseCmd = 'no shutdown';
+                    } else if (lower.startsWith('no shutdown')) {
+                        inverseCmd = 'shutdown';
+                    } else if (lower.startsWith('description')) {
+                        inverseCmd = 'no description';
+                    } else if (lower.startsWith('no ')) {
+                        inverseCmd = clean.substring(3);
+                    } else {
+                        inverseCmd = `no ${clean}`;
+                    }
+
+                    rollbackSequence.push(inverseCmd);
                 }
-                for (const submode of targetStack) {
-                    rollbackSequence.push(submode);
+                
+                rollbackSequence.push('end');
+
+                let summary = '';
+                for (const rollbackCmd of rollbackSequence) {
+                    console.log(chalk.gray(`❯ Rollback: Executing "${rollbackCmd}"`));
+                    summary += await session.execute(rollbackCmd);
                 }
-                currentRollbackContext = [...targetStack];
+                rollbackResult = summary;
+                this.clear();
             }
-
-            const clean = item.command;
-            const lower = clean.toLowerCase();
-            let inverseCmd = '';
-
-            if (lower.startsWith('ip address') || lower.startsWith('ip add')) {
-                inverseCmd = 'no ip address';
-            } else if (lower.startsWith('shutdown')) {
-                inverseCmd = 'no shutdown';
-            } else if (lower.startsWith('no shutdown')) {
-                inverseCmd = 'shutdown';
-            } else if (lower.startsWith('description')) {
-                inverseCmd = 'no description';
-            } else if (lower.startsWith('no ')) {
-                inverseCmd = clean.substring(3);
-            } else {
-                inverseCmd = `no ${clean}`;
-            }
-
-            rollbackSequence.push(inverseCmd);
         }
-        
-        rollbackSequence.push('end');
 
-        let summary = '';
-        for (const rollbackCmd of rollbackSequence) {
-            console.log(chalk.gray(`❯ Rollback: Executing "${rollbackCmd}"`));
-            summary += await session.execute(rollbackCmd);
+      
+        const isConfigMode = ['GLOBAL_CONFIG', 'INTERFACE_CONFIG', 'VLAN_CONFIG'].includes(modeBeforeRollback);
+        if (isConfigMode) {
+            console.log(chalk.cyan(`❯ Re-entering previous configuration context...`));
+            let currentState = session.getState();
+            if (currentState.currentMode === 'USER_EXEC') {
+                await session.execute('enable');
+            }
+            await session.execute('configure terminal');
+            for (const submode of savedContext) {
+                console.log(chalk.gray(`❯ Restoring context: Executing "${submode}"`));
+                await session.execute(submode);
+            }
         }
-        
-        this.clear();
-        return summary;
+
+        return rollbackResult;
     }
 
     public clear(): void {

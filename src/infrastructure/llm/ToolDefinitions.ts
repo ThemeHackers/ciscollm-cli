@@ -9,7 +9,7 @@ export const CiscoAgentTools = [
                 properties: {
                     command: {
                         type: 'string',
-                        description: 'Cisco IOS command string (e.g., "show ip interface brief", "vlan 10"). Do not chain commands.'
+                        description: 'Cisco IOS command string (e.g., "show ip interface brief", "vlan 10"). IMPORTANT: You must navigate to the appropriate CLI mode (e.g., execute "enable" then "configure terminal") before running configuration commands. Check current prompt and mode in state info first.'
                     },
                     device: {
                         type: 'string',

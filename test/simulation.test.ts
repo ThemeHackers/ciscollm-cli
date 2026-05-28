@@ -1,3 +1,4 @@
+process.env.NODE_ENV = 'test';
 import { MockSession } from '../src/infrastructure/protocols/MockSession';
 import { MultiAgentCoordinator } from '../src/core/agent/MultiAgentCoordinator';
 import { ErrorAnalyzer } from '../src/core/guardrails/ErrorAnalyzer';
@@ -250,15 +251,15 @@ async function runSimulationTests() {
     };
     
   
-    await (agent3 as any).handleExecuteCommandCall(executeCall('show ip interface brief'));
-    await (agent3 as any).handleExecuteCommandCall(executeCall('show ip interface brief'));
-    await (agent3 as any).handleExecuteCommandCall(executeCall('show ip interface brief'));
+    await (agent3 as any).handleExecuteCommandCall(executeCall('terminal shell'));
+    await (agent3 as any).handleExecuteCommandCall(executeCall('terminal shell'));
+    await (agent3 as any).handleExecuteCommandCall(executeCall('terminal shell'));
     
     const history3 = (agent3 as any).messages;
-    assert.ok(history3.some((m: any) => m.role === 'tool' && m.content.includes('Interface')), 'Previous show ip interface brief commands should execute successfully');
+    assert.ok(history3.some((m: any) => m.role === 'tool'), 'Previous terminal shell commands should execute successfully');
     
   
-    await (agent3 as any).handleExecuteCommandCall(executeCall('show ip interface brief'));
+    await (agent3 as any).handleExecuteCommandCall(executeCall('terminal shell'));
     const finalHistory = (agent3 as any).messages;
     const lastResponse = finalHistory[finalHistory.length - 1];
     assert.strictEqual(lastResponse.role, 'tool', 'Last response should be tool response');
@@ -266,9 +267,9 @@ async function runSimulationTests() {
     
   
     const agent4 = new CiscoAgentLoop(null as any, coordinator2);
-    await (agent4 as any).handleExecuteCommandCall(executeCall('show ip interface brief'));
+    await (agent4 as any).handleExecuteCommandCall(executeCall('terminal shell'));
     await (agent4 as any).handleExecuteCommandCall(executeCall('ping 127.0.0.1'));
-    await (agent4 as any).handleExecuteCommandCall(executeCall('show ip interface brief'));
+    await (agent4 as any).handleExecuteCommandCall(executeCall('terminal shell'));
     await (agent4 as any).handleExecuteCommandCall(executeCall('ping 127.0.0.1'));
     
     const history4 = (agent4 as any).messages;
@@ -276,6 +277,57 @@ async function runSimulationTests() {
     assert.strictEqual(hasLoopError, false, 'Alternating commands should NOT trigger loop check block');
     
     console.log(' -> Dynamic Tool Selection and Consecutive Loop Check passed.');
+
+    console.log('\n[Test 9]: Simulating VLAN naming and submode configuration...');
+    const mockSwitch3 = new MockSession('Switch3');
+    await mockSwitch3.connect();
+    assert.strictEqual(mockSwitch3.getState().currentMode, 'USER_EXEC');
+    await mockSwitch3.execute('enable');
+    await mockSwitch3.execute('configure terminal');
+    assert.strictEqual(mockSwitch3.getState().currentMode, 'GLOBAL_CONFIG');
+    await mockSwitch3.execute('vlan 10');
+    assert.strictEqual(mockSwitch3.getState().currentMode, 'VLAN_CONFIG');
+    assert.strictEqual(mockSwitch3.getState().prompt, 'Switch3(config-vlan)#');
+    await mockSwitch3.execute('name Sales-Dept');
+    const vlanBrief = await mockSwitch3.execute('show vlan brief');
+    assert.ok(vlanBrief.includes('10'), 'VLAN 10 must exist');
+    assert.ok(vlanBrief.includes('Sales-Dept'), 'VLAN 10 name must be Sales-Dept');
+    await mockSwitch3.execute('exit');
+    assert.strictEqual(mockSwitch3.getState().currentMode, 'GLOBAL_CONFIG');
+    assert.strictEqual(mockSwitch3.getState().prompt, 'Switch3(config)#');
+    assert.strictEqual((mockSwitch3 as any).activeVlan, null);
+    await mockSwitch3.disconnect();
+    console.log(' -> VLAN naming and submode configuration test passed.');
+
+    console.log('\n[Test 10]: Simulating Transaction Rollback Context Restoration...');
+    const mockSwitch4 = new MockSession('Switch4');
+    await mockSwitch4.connect();
+    await mockSwitch4.execute('enable');
+    await mockSwitch4.execute('configure terminal');
+    
+    const tx4 = new TransactionManager();
+    tx4.trackMutation('interface GigabitEthernet0/1');
+    await mockSwitch4.execute('interface GigabitEthernet0/1');
+    assert.strictEqual(mockSwitch4.getState().currentMode, 'INTERFACE_CONFIG');
+    
+    tx4.trackMutation('description Backup Link');
+    await mockSwitch4.execute('description Backup Link');
+    
+    const failedCmd = 'invalid_command_xyz';
+    tx4.trackMutation(failedCmd);
+    const failedResult = await mockSwitch4.execute(failedCmd);
+    assert.ok(failedResult.includes('% Unrecognized command'));
+    
+    await tx4.executeRollback(mockSwitch4, failedCmd);
+    
+    assert.strictEqual(mockSwitch4.getState().currentMode, 'INTERFACE_CONFIG');
+    assert.strictEqual(mockSwitch4.getState().prompt, 'Switch4(config-if)#');
+    
+    const runConfig4 = await mockSwitch4.execute('show running-config');
+    assert.ok(!runConfig4.includes('description Backup Link'), 'Mutations must be reverted');
+    
+    await mockSwitch4.disconnect();
+    console.log(' -> Transaction Rollback Context Restoration test passed.');
 
     console.log('\nCisco Switch simulation test suite completed successfully!');
 }

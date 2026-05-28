@@ -7,7 +7,7 @@ import { PromptEngine } from './PromptEngine';
 import { CommandReferenceEngine } from './CommandReferenceEngine';
 import { ChatMessage, ToolCall } from '../../shared/types';
 import { CiscoAgentTools } from '../../infrastructure/llm/ToolDefinitions';
-import { execFile } from 'child_process';
+import { execFile, exec } from 'child_process';
 import { logger, createSpinner } from '../../cli/ui/ui';
 import chalk from 'chalk';
 import { PreExecutionValidator } from '../guardrails/PreExecutionValidator';
@@ -86,7 +86,7 @@ export class CiscoAgentLoop {
             `Loading Cisco command reference from cf_command_ref.pdf${this.strictReferenceMode ? ' (strict mode ON)' : ''}...`
         ).start();
         try {
-            this.commandHints = await this.commandReferenceEngine.getPromptHints(userGoal, 14);
+            this.commandHints = await this.commandReferenceEngine.getPromptHints(userGoal, 6);
             const telemetry = this.commandReferenceEngine.getWarmupTelemetry();
             refSpinner.succeed(
                 `Cisco command reference hints loaded${this.strictReferenceMode ? ' with strict-mode validation enabled' : ''}.`
@@ -118,7 +118,7 @@ export class CiscoAgentLoop {
 
         let dynamicLoopActive = true;
         let executionDepth = 0;
-        const MAX_STEPS = 15;
+        const MAX_STEPS = 20;
 
         while (dynamicLoopActive && executionDepth < MAX_STEPS) {
             executionDepth++;
@@ -150,17 +150,39 @@ export class CiscoAgentLoop {
             });
 
             const modelSpinner = createSpinner(`[Step ${executionDepth}/${MAX_STEPS}] Agent is thinking...`).start();
+            
+            let gpuTimer: NodeJS.Timeout | null = null;
+            let isThinking = true;
+            
+            const updateGpu = async () => {
+                if (!isThinking) return;
+                const gpuInfo = await this.getGpuInfoAsync();
+                if (gpuInfo && isThinking) {
+                    modelSpinner.text = `[Step ${executionDepth}/${MAX_STEPS}] Agent is thinking... [GPU: ${gpuInfo}]`;
+                }
+            };
+            
+            updateGpu();
+            gpuTimer = setInterval(updateGpu, 1500);
+
             let response: ChatMessage;
             try {
                 response = await this.llmClient.generateCompletion(this.messages, activeTools);
+                isThinking = false;
+                if (gpuTimer) clearInterval(gpuTimer);
+                
+                const finalGpu = await this.getGpuInfoAsync();
+                const gpuSuffix = finalGpu ? ` [GPU: ${finalGpu}]` : '';
                 this.messages.push(response);
-                modelSpinner.succeed(`[Step ${executionDepth}/${MAX_STEPS}] Thinking complete.`);
+                modelSpinner.succeed(`[Step ${executionDepth}/${MAX_STEPS}] Thinking complete.${gpuSuffix}`);
                 
                 const thoughts = response.reasoning_content || response.content;
                 if (thoughts && thoughts.trim()) {
                     logger.reasoning(thoughts);
                 }
             } catch (err: any) {
+                isThinking = false;
+                if (gpuTimer) clearInterval(gpuTimer);
                 modelSpinner.fail(`[Step ${executionDepth}/${MAX_STEPS}] LLM Client failed to respond.`);
                 throw err;
             }
@@ -190,16 +212,23 @@ export class CiscoAgentLoop {
                     this.validationNudgeCount++;
                     logger.info('Agent finished configuration without running validation ping. Enforcing closed-loop validation...');
 
+                  
+                    const validationDest = await this.resolveValidationDestination(lastMutatedDevice);
+
                     if (this.validationNudgeCount >= 2) {
                         logger.warn('Model skipped ping_test repeatedly. Triggering automatic ping fallback.');
-                        await this.triggerAutomaticValidationPing(lastMutatedDevice);
+                        if (validationDest === '127.0.0.1') {
+                            logger.warn('No reachable destination found — skipping auto-ping fallback.');
+                        } else {
+                            await this.triggerAutomaticValidationPing(lastMutatedDevice);
+                        }
                         logger.heading('FINAL AGENT REASONING SUMMARY');
                         console.log(chalk.yellow('Validation ping was auto-triggered by fallback policy after repeated non-tool responses.'));
                         dynamicLoopActive = false;
                     } else {
                         this.messages.push({
                             role: 'user',
-                            content: `System Validation Request: Your configurations are applied. You MUST perform exactly one ping_test tool call in your next response. If destination is unknown, use destination "127.0.0.1" and device "${lastMutatedDevice}". Do not declare success until ping_test has executed.`
+                            content: `System Validation Request: Your configurations are applied. You MUST perform exactly one ping_test tool call in your next response. Use device "${lastMutatedDevice}" and destination "${validationDest}" (resolved from the current routing table). Do not declare success until ping_test has executed.`
                         });
                     }
                 } else {
@@ -252,10 +281,22 @@ export class CiscoAgentLoop {
                 return '127.0.0.1';
             }
 
-            const output = await session.execute('show ip interface brief');
-            const lines = output.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+            
+            const routeOutput = await session.execute('show ip route');
+            for (const line of routeOutput.split(/\r?\n/).map(l => l.trim()).filter(Boolean)) {
+                
+                const staticMatch = line.match(/^S\s+(\d{1,3}(?:\.\d{1,3}){3})\/?(\d+)?/);
+                if (staticMatch) {
+                    const base = staticMatch[1];
 
-            for (const line of lines) {
+                    const host = base.replace(/(\d+)$/, '1');
+                    return host;
+                }
+            }
+
+          
+            const briefOutput = await session.execute('show ip interface brief');
+            for (const line of briefOutput.split(/\r?\n/).map(l => l.trim()).filter(Boolean)) {
                 if (/^Interface\s+/i.test(line)) continue;
                 const ipMatch = line.match(/\b(\d{1,3}(?:\.\d{1,3}){3})\b/);
                 if (!ipMatch) continue;
@@ -265,7 +306,7 @@ export class CiscoAgentLoop {
                 }
             }
         } catch {
-
+           
         }
 
         return '127.0.0.1';
@@ -490,7 +531,7 @@ export class CiscoAgentLoop {
                 const rbSpinner = createSpinner(`[${targetDeviceId}] Reverting configuration changes...`).start();
                 let rollbackLogs = '';
                 if (tx) {
-                    rollbackLogs = await tx.executeRollback(session);
+                    rollbackLogs = await tx.executeRollback(session, cleanCommand);
                 }
                 rbSpinner.succeed(`[${targetDeviceId}] Rollback execution complete.`);
 
@@ -824,5 +865,27 @@ export class CiscoAgentLoop {
             `[... TRUNCATED ${removedLinesCount} LINES OF TERMINAL OUTPUT TO PREVENT CONTEXT WINDOW OVERFLOW ...]`,
             ...lastPart
         ].join('\n');
+    }
+
+    private getGpuInfoAsync(): Promise<string | null> {
+        return new Promise((resolve) => {
+            exec(
+                'nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw --format=csv,noheader,nounits',
+                { timeout: 800 },
+                (error, stdout) => {
+                    if (error) {
+                        resolve(null);
+                        return;
+                    }
+                    const parts = stdout.trim().split(',').map(p => p.trim());
+                    if (parts.length >= 5) {
+                        const [gpuUtil, memUsed, memTotal, temp, power] = parts;
+                        resolve(`${gpuUtil}% Util | VRAM: ${memUsed}/${memTotal}MB | ${temp}°C | ${power}W`);
+                    } else {
+                        resolve(null);
+                    }
+                }
+            );
+        });
     }
 }

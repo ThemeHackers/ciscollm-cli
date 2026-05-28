@@ -51,10 +51,14 @@ export class LLMClient {
                 messages: messages,
                 tools: tools,
                 tool_choice: 'auto',
-                temperature: 0.1
+                temperature: 0.1,
+                max_tokens: 1500
             }, { headers });
 
             const message = response.data.choices[0].message;
+            if (message && message.tool_calls && message.tool_calls.length > 1) {
+                message.tool_calls = [message.tool_calls[0]];
+            }
             if (message && message.content && (!message.tool_calls || message.tool_calls.length === 0)) {
                 const content = message.content;
                 if (content.includes('<tool_code>') || content.includes('<tool_call>') || content.includes('<parameter=')) {
