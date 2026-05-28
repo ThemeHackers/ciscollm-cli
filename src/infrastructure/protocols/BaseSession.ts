@@ -2,6 +2,21 @@ import { SessionState } from '../../shared/types';
 
 export abstract class BaseSession {
     protected state: SessionState = { currentMode: 'UNKNOWN', hostname: 'Router', prompt: '>' };
+    private notificationCallbacks: ((msg: string) => void)[] = [];
+
+    public onNotification(callback: (msg: string) => void): void {
+        this.notificationCallbacks.push(callback);
+    }
+
+    protected emitNotification(msg: string): void {
+        for (const cb of this.notificationCallbacks) {
+            try {
+                cb(msg);
+            } catch (e) {
+                console.error('Error in notification callback:', e);
+            }
+        }
+    }
     
     public abstract connect(): Promise<void>;
     public abstract execute(command: string, timeoutMs?: number): Promise<string>;

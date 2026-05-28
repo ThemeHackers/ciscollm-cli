@@ -40,18 +40,27 @@ export class SshSession extends BaseSession {
                         console.log(chalk.gray(`❯ SSH channel closed.`));
                     });
 
-                    
-                    setTimeout(async () => {
+                    const onStreamUpdate = async () => {
                         const match = PROMPT_REGEX.exec(this.buffer);
                         if (match) {
+                            this.eventEmitter.removeListener('stream_updated', onStreamUpdate);
+                            clearTimeout(connectTimeout);
                             this.updateStateFromPrompt(match[1]);
+                            console.log(chalk.cyan(`❯ Disabling pagination with 'terminal length 0'...`));
+                            await this.execute('terminal length 0').catch(err => {
+                                console.warn(chalk.yellow(`⚠ Failed to set terminal length 0: ${err.message}`));
+                            });
+                            resolve();
                         }
-                        console.log(chalk.cyan(`❯ Disabling pagination with 'terminal length 0'...`));
-                        await this.execute('terminal length 0').catch(err => {
-                            console.warn(chalk.yellow(`⚠ Failed to set terminal length 0: ${err.message}`));
-                        });
-                        resolve();
-                    }, 2000);
+                    };
+
+                    const connectTimeout = setTimeout(() => {
+                        this.eventEmitter.removeListener('stream_updated', onStreamUpdate);
+                        reject(new Error(`SSH prompt detection timed out after 15000ms. Received: ${this.buffer}`));
+                    }, 15000);
+
+                    this.eventEmitter.on('stream_updated', onStreamUpdate);
+                    onStreamUpdate();
                 });
             });
 
@@ -70,16 +79,43 @@ export class SshSession extends BaseSession {
         });
     }
 
+    private cleanBuffer(): void {
+        const globalMoreRegex = new RegExp(MORE_REGEX.source, 'gi');
+        if (globalMoreRegex.test(this.buffer)) {
+            if (this.channel) {
+                this.channel.write(' ');
+            }
+            this.buffer = this.buffer.replace(globalMoreRegex, '');
+        }
+        this.buffer = this.buffer.replace(/[\x08\b]+/g, '');
+    }
+
+    private extractSyslogs(): void {
+        const lines = this.buffer.split(/\r?\n/);
+        if (lines.length <= 1) return;
+
+        const completedLines = lines.slice(0, -1);
+        const lastLine = lines[lines.length - 1];
+        const remainingLines: string[] = [];
+
+        for (const line of completedLines) {
+            if (/%[A-Za-z0-9_]+-[0-7]-[A-Za-z0-9_]+:/.test(line)) {
+                console.log(chalk.yellow(`[Syslog Notification] ${line}`));
+                this.emitNotification(line);
+            } else {
+                remainingLines.push(line);
+            }
+        }
+
+        this.buffer = remainingLines.join('\n') + (remainingLines.length > 0 ? '\n' : '') + lastLine;
+    }
+
     private handleData(data: Buffer): void {
         const chunk = data.toString('utf-8');
         this.buffer += chunk;
 
-        if (MORE_REGEX.test(this.buffer)) {
-            if (this.channel) {
-                this.channel.write(' ');
-            }
-            this.buffer = this.buffer.replace(MORE_REGEX, '');
-        }
+        this.cleanBuffer();
+        this.extractSyslogs();
 
         this.eventEmitter.emit('stream_updated');
     }
@@ -91,7 +127,7 @@ export class SshSession extends BaseSession {
         }
 
         return new Promise((resolve, reject) => {
-            this.buffer = ''; 
+            const commandStartIndex = this.buffer.length;
             
             const timeout = setTimeout(() => {
                 this.eventEmitter.removeAllListeners('stream_updated');
@@ -99,13 +135,20 @@ export class SshSession extends BaseSession {
             }, timeoutMs);
 
             this.eventEmitter.on('stream_updated', () => {
-                const match = PROMPT_REGEX.exec(this.buffer);
+                const commandOutput = this.buffer.slice(commandStartIndex);
+                const match = PROMPT_REGEX.exec(commandOutput);
                 if (match) {
                     clearTimeout(timeout);
                     this.eventEmitter.removeAllListeners('stream_updated');
                     
-                    const fullOutput = this.buffer;
+                    const fullOutput = commandOutput;
                     this.updateStateFromPrompt(match[1]);
+
+                  
+                    const matchIndex = commandOutput.indexOf(match[0]);
+                    const newStart = commandStartIndex + matchIndex + match[0].length;
+                    this.buffer = this.buffer.slice(newStart);
+
                     resolve(fullOutput);
                 }
             });

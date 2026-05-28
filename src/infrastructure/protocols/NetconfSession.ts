@@ -48,7 +48,12 @@ export class NetconfSession extends BaseSession {
   private negotiatedCapabilities: string[] = [];
   private incomingBuffer = '';
   private bufferedMessages: string[] = [];
-  private pendingMessageWaiter: {
+  private pendingMessageWaiters = new Map<string, {
+    resolve: (payload: string) => void;
+    reject: (error: Error) => void;
+    timer: NodeJS.Timeout;
+  }>();
+  private helloMessageWaiter: {
     resolve: (payload: string) => void;
     reject: (error: Error) => void;
     timer: NodeJS.Timeout;
@@ -181,9 +186,15 @@ export class NetconfSession extends BaseSession {
     const framedPayload = this.frameMessage(xmlPayload, this.negotiatedFraming);
     console.log(chalk.cyan(`❯ Sending NETCONF RPC request to ${this.host}...`));
 
+    const msgIdMatch = /message-id=["']([^"']+)["']/i.exec(xmlPayload);
+    const messageId = msgIdMatch ? msgIdMatch[1] : null;
+    if (!messageId) {
+      throw new Error('Unable to extract message-id from NETCONF RPC payload.');
+    }
+
     await this.writeFrame(framedPayload);
 
-    const xml = await this.waitForMessage(timeoutMs);
+    const xml = await this.waitForMessageForId(messageId, timeoutMs);
     const parsed = await this.parseRpcReply(xml);
 
     this.throwIfRpcError(parsed);
@@ -310,7 +321,7 @@ export class NetconfSession extends BaseSession {
     await this.writeFrame(this.frameMessage(hello, '1.0'));
 
     const helloTimeout = this.credentials.helloTimeoutMs ?? 15000;
-    const peerHelloXml = await this.waitForMessage(helloTimeout);
+    const peerHelloXml = await this.waitForHelloMessage(helloTimeout);
     const peerHello = await this.parseRpcReply(peerHelloXml);
 
     this.negotiatedCapabilities = this.extractCapabilities(peerHello);
@@ -330,19 +341,35 @@ export class NetconfSession extends BaseSession {
     });
   }
 
-  private buildErrorMessage(error: any): string {
-    const errorTag = this.findFirstText(error?.['error-tag'] ?? error?.errorTag ?? error?.['error-type'] ?? error?.errorType);
-    const errorMessage = this.findFirstText(error?.['error-message'] ?? error?.errorMessage ?? error?._);
+  private buildErrorMessage(errorPayload: any): string {
+    const errors = Array.isArray(errorPayload) ? errorPayload : [errorPayload];
+    const descriptions: string[] = [];
 
-    if (errorTag && errorMessage) {
-      return `${errorTag}: ${errorMessage}`;
+    for (const err of errors) {
+      const errorTag = this.findFirstText(err?.['error-tag'] ?? err?.errorTag ?? err?.['error-type'] ?? err?.errorType);
+      const errorMessage = this.findFirstText(err?.['error-message'] ?? err?.errorMessage ?? err?._);
+      const errorPath = this.findFirstText(err?.['error-path'] ?? err?.errorPath);
+      const errorInfo = err?.['error-info'] ? JSON.stringify(err['error-info']) : '';
+
+      let desc = '';
+      if (errorTag && errorMessage) {
+        desc = `${errorTag}: ${errorMessage}`;
+      } else if (errorTag) {
+        desc = errorTag;
+      } else {
+        desc = errorMessage || 'Unknown NETCONF rpc-error';
+      }
+
+      if (errorPath) {
+        desc += ` (path: ${errorPath})`;
+      }
+      if (errorInfo) {
+        desc += ` (info: ${errorInfo})`;
+      }
+      descriptions.push(desc);
     }
 
-    if (errorTag) {
-      return errorTag;
-    }
-
-    return errorMessage || 'Unknown NETCONF rpc-error';
+    return descriptions.join('; ');
   }
 
   private throwIfRpcError(parsed: Record<string, any>): void {
@@ -353,8 +380,7 @@ export class NetconfSession extends BaseSession {
       return;
     }
 
-    const errorPayload = Array.isArray(rpcError) ? rpcError[0] : rpcError;
-    const error = new Error(`NETCONF rpc-error: ${this.buildErrorMessage(errorPayload)}`);
+    const error = new Error(`NETCONF rpc-error: ${this.buildErrorMessage(rpcError)}`);
     (error as any).details = parsed;
     throw error;
   }
@@ -492,9 +518,20 @@ export class NetconfSession extends BaseSession {
       this.incomingBuffer = extracted.remainder;
       const payload = extracted.payload.trim();
 
-      if (this.pendingMessageWaiter) {
-        const waiter = this.pendingMessageWaiter;
-        this.pendingMessageWaiter = null;
+      const msgIdMatch = /message-id=["']([^"']+)["']/i.exec(payload);
+      const messageId = msgIdMatch ? msgIdMatch[1] : null;
+
+      if (messageId) {
+        const waiter = this.pendingMessageWaiters.get(messageId);
+        if (waiter) {
+          this.pendingMessageWaiters.delete(messageId);
+          clearTimeout(waiter.timer);
+          waiter.resolve(payload);
+          continue;
+        }
+      } else if (this.helloMessageWaiter && payload.includes('<hello')) {
+        const waiter = this.helloMessageWaiter;
+        this.helloMessageWaiter = null;
         clearTimeout(waiter.timer);
         waiter.resolve(payload);
         continue;
@@ -572,22 +609,23 @@ export class NetconfSession extends BaseSession {
     return null;
   }
 
-  private waitForMessage(timeoutMs: number): Promise<string> {
-    const buffered = this.bufferedMessages.shift();
-    if (buffered !== undefined) {
-      return Promise.resolve(buffered);
+  private waitForHelloMessage(timeoutMs: number): Promise<string> {
+    const bufferedIndex = this.bufferedMessages.findIndex(m => m.includes('<hello'));
+    if (bufferedIndex !== -1) {
+      const msg = this.bufferedMessages[bufferedIndex];
+      this.bufferedMessages.splice(bufferedIndex, 1);
+      return Promise.resolve(msg);
     }
 
     return new Promise<string>((resolve, reject) => {
       const timer = setTimeout(() => {
-        if (this.pendingMessageWaiter && this.pendingMessageWaiter.timer === timer) {
-          this.pendingMessageWaiter = null;
+        if (this.helloMessageWaiter && this.helloMessageWaiter.timer === timer) {
+          this.helloMessageWaiter = null;
         }
-
-        reject(new Error(`NETCONF response timeout after ${timeoutMs}ms.`));
+        reject(new Error(`NETCONF hello handshake timeout after ${timeoutMs}ms.`));
       }, timeoutMs);
 
-      this.pendingMessageWaiter = {
+      this.helloMessageWaiter = {
         resolve,
         reject,
         timer
@@ -595,13 +633,47 @@ export class NetconfSession extends BaseSession {
     });
   }
 
+  private waitForMessageForId(messageId: string, timeoutMs: number): Promise<string> {
+    const bufferedIndex = this.bufferedMessages.findIndex(m => {
+      const match = /message-id=["']([^"']+)["']/i.exec(m);
+      return match ? match[1] === messageId : false;
+    });
+
+    if (bufferedIndex !== -1) {
+      const msg = this.bufferedMessages[bufferedIndex];
+      this.bufferedMessages.splice(bufferedIndex, 1);
+      return Promise.resolve(msg);
+    }
+
+    return new Promise<string>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        if (this.pendingMessageWaiters.has(messageId)) {
+          this.pendingMessageWaiters.delete(messageId);
+        }
+        reject(new Error(`NETCONF response timeout for message-id ${messageId} after ${timeoutMs}ms.`));
+      }, timeoutMs);
+
+      this.pendingMessageWaiters.set(messageId, {
+        resolve,
+        reject,
+        timer
+      });
+    });
+  }
+
   private rejectPending(error: Error): void {
-    if (this.pendingMessageWaiter) {
-      const waiter = this.pendingMessageWaiter;
-      this.pendingMessageWaiter = null;
+    if (this.helloMessageWaiter) {
+      const waiter = this.helloMessageWaiter;
+      this.helloMessageWaiter = null;
       clearTimeout(waiter.timer);
       waiter.reject(error);
     }
+
+    for (const waiter of this.pendingMessageWaiters.values()) {
+      clearTimeout(waiter.timer);
+      waiter.reject(error);
+    }
+    this.pendingMessageWaiters.clear();
   }
 
   private cleanupConnection(): void {

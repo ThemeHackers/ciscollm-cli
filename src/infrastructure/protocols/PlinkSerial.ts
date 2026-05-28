@@ -45,6 +45,11 @@ export class PlinkSerialSession extends BaseSession {
                 if (finished) return;
                 finished = true;
                 clearTimeout(connectTimer);
+                this.eventEmitter.removeListener('stream_updated', onStreamUpdate);
+                if (this.process) {
+                    this.process.kill('SIGKILL');
+                    this.process = null;
+                }
                 const available = await PlinkSerialSession.listAvailableComPorts();
                 const portMsg = available.length > 0 
                     ? `Active COM ports detected: ${available.join(', ')}`
@@ -70,42 +75,73 @@ export class PlinkSerialSession extends BaseSession {
                 await cleanupAndReject(`plink process exited prematurely with code ${code}`);
             });
             
-            const connectTimer = setTimeout(async () => {
-                try {
-                    const match = PROMPT_REGEX.exec(this.buffer);
-                    if (match) {
-                        this.updateStateFromPrompt(match[1]);
-                        console.log(chalk.cyan(`❯ Disabling pagination with 'terminal length 0'...`));
-                        await this.execute('terminal length 0').catch(err => {
-                            console.warn(chalk.yellow(`⚠ Failed to set terminal length 0: ${err.message}`));
-                        });
-                        finished = true;
-                        this.process?.removeAllListeners('close');
-                        this.process?.on('close', (code) => {
+            const onStreamUpdate = async () => {
+                const match = PROMPT_REGEX.exec(this.buffer);
+                if (match) {
+                    this.eventEmitter.removeListener('stream_updated', onStreamUpdate);
+                    clearTimeout(connectTimer);
+                    this.updateStateFromPrompt(match[1]);
+                    console.log(chalk.cyan(`❯ Disabling pagination with 'terminal length 0'...`));
+                    await this.execute('terminal length 0').catch(err => {
+                        console.warn(chalk.yellow(`⚠ Failed to set terminal length 0: ${err.message}`));
+                    });
+                    finished = true;
+                    if (this.process) {
+                        this.process.removeAllListeners('close');
+                        this.process.on('close', (code) => {
                             console.log(chalk.gray(`❯ Plink process closed with code ${code}`));
                         });
-                        resolve();
-                    } else {
-                        await cleanupAndReject(`Failed to sync serial prompt on ${this.comPort}`);
                     }
-                } catch (e: any) {
-                    await cleanupAndReject(`Connection synchronization failed: ${e.message}`);
+                    resolve();
                 }
-            }, 3000);
+            };
+
+            const connectTimer = setTimeout(async () => {
+                await cleanupAndReject(`Failed to sync serial prompt on ${this.comPort} due to timeout.`);
+            }, 15000);
+
+            this.eventEmitter.on('stream_updated', onStreamUpdate);
+            onStreamUpdate();
         });
+    }
+
+    private cleanBuffer(): void {
+        const globalMoreRegex = new RegExp(MORE_REGEX.source, 'gi');
+        if (globalMoreRegex.test(this.buffer)) {
+            if (this.process && !this.process.killed && this.process.stdin.writable) {
+                this.process.stdin.write(' ');
+            }
+            this.buffer = this.buffer.replace(globalMoreRegex, '');
+        }
+        this.buffer = this.buffer.replace(/[\x08\b]+/g, '');
+    }
+
+    private extractSyslogs(): void {
+        const lines = this.buffer.split(/\r?\n/);
+        if (lines.length <= 1) return;
+
+        const completedLines = lines.slice(0, -1);
+        const lastLine = lines[lines.length - 1];
+        const remainingLines: string[] = [];
+
+        for (const line of completedLines) {
+            if (/%[A-Za-z0-9_]+-[0-7]-[A-Za-z0-9_]+:/.test(line)) {
+                console.log(chalk.yellow(`[Syslog Notification] ${line}`));
+                this.emitNotification(line);
+            } else {
+                remainingLines.push(line);
+            }
+        }
+
+        this.buffer = remainingLines.join('\n') + (remainingLines.length > 0 ? '\n' : '') + lastLine;
     }
 
     private handleData(data: Buffer): void {
         const chunk = data.toString('utf-8');
         this.buffer += chunk;
 
-        
-        if (MORE_REGEX.test(this.buffer)) {
-            if (this.process && !this.process.killed) {
-                this.process.stdin.write(' ');
-            }
-            this.buffer = this.buffer.replace(MORE_REGEX, '');
-        }
+        this.cleanBuffer();
+        this.extractSyslogs();
 
         this.eventEmitter.emit('stream_updated');
     }
@@ -117,7 +153,7 @@ export class PlinkSerialSession extends BaseSession {
         }
 
         return new Promise((resolve, reject) => {
-            this.buffer = ''; 
+            const commandStartIndex = this.buffer.length;
             
             const timeout = setTimeout(() => {
                 this.eventEmitter.removeAllListeners('stream_updated');
@@ -125,13 +161,20 @@ export class PlinkSerialSession extends BaseSession {
             }, timeoutMs);
 
             this.eventEmitter.on('stream_updated', () => {
-                const match = PROMPT_REGEX.exec(this.buffer);
+                const commandOutput = this.buffer.slice(commandStartIndex);
+                const match = PROMPT_REGEX.exec(commandOutput);
                 if (match) {
                     clearTimeout(timeout);
                     this.eventEmitter.removeAllListeners('stream_updated');
                     
-                    const fullOutput = this.buffer;
+                    const fullOutput = commandOutput;
                     this.updateStateFromPrompt(match[1]);
+
+                
+                    const matchIndex = commandOutput.indexOf(match[0]);
+                    const newStart = commandStartIndex + matchIndex + match[0].length;
+                    this.buffer = this.buffer.slice(newStart);
+
                     resolve(fullOutput);
                 }
             });
@@ -162,21 +205,25 @@ export class PlinkSerialSession extends BaseSession {
     public async disconnect(): Promise<void> {
         if (this.process) {
             console.log(chalk.gray(`❯ Detaching sub-process pipelines...`));
-            this.process.kill('SIGTERM');
+            const proc = this.process;
             this.process = null;
+            proc.kill('SIGTERM');
+            setTimeout(() => {
+                if (!proc.killed) {
+                    proc.kill('SIGKILL');
+                }
+            }, 500);
         }
     }
 
-    
     public getProcess(): ChildProcessWithoutNullStreams | null {
         return this.process;
     }
 
-    
     public static async listAvailableComPorts(): Promise<string[]> {
         return new Promise((resolve) => {
             const { exec } = require('child_process');
-            const cmd = 'powershell -Command "Get-CimInstance Win32_PnPEntity | Where-Object { $_.Caption -match \'USB.*Serial|USB-to-Serial|Prolific|CH340|FTDI|Silicon Labs|CP210\' } | Select-Object -ExpandProperty Caption"';
+            const cmd = 'reg query HKLM\\HARDWARE\\DEVICEMAP\\SERIALCOMM';
             exec(cmd, (error: any, stdout: string) => {
                 if (error) {
                     resolve([]);
@@ -185,9 +232,9 @@ export class PlinkSerialSession extends BaseSession {
                 const ports: string[] = [];
                 const lines = stdout.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
                 for (const line of lines) {
-                    const match = /\((COM\d+)\)/i.exec(line);
+                    const match = /\b(COM\d+)\b/i.exec(line);
                     if (match) {
-                        ports.push(match[1]);
+                        ports.push(match[1].toUpperCase());
                     }
                 }
                 resolve(ports);
