@@ -62,7 +62,7 @@ export class CmlSession extends BaseSession {
                 path: url.pathname + url.search,
                 method,
                 headers,
-                rejectUnauthorized: false
+                rejectUnauthorized: true
             };
 
             const req = https.request(opts, (res) => {
