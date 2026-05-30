@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { StringDecoder } from 'string_decoder';
 import { CiscoAgentTools } from './ToolDefinitions';
 import { ChatMessage } from '../../shared/types';
 
@@ -28,7 +29,15 @@ export class LLMClient {
         }
     }
 
-    public async generateCompletion(messages: ChatMessage[], tools: any[] = CiscoAgentTools): Promise<ChatMessage> {
+    public getModelName(): string {
+        return this.modelName;
+    }
+
+    public async generateCompletion(
+        messages: ChatMessage[],
+        tools: any[] = CiscoAgentTools,
+        onChunk?: (data: { content?: string; reasoning?: string }) => void
+    ): Promise<ChatMessage> {
         try {
             const url = `${this.endpoint.replace(/\/$/, '')}/chat/completions`;
             
@@ -42,71 +51,15 @@ export class LLMClient {
                     throw new Error('API key is required for cloud provider. Set OPENROUTER_API_KEY environment variable or pass --api-key.');
                 }
                 headers['Authorization'] = `Bearer ${key}`;
-                headers['HTTP-Referer'] = 'https://github.com/ThemeHackers/LearnSync';
+                headers['HTTP-Referer'] = 'https://github.com/ThemeHackers/ciscollm-cli';
                 headers['X-Title'] = 'ciscollm-cli';
             }
 
-            const response = await axios.post(url, {
-                model: this.modelName,
-                messages: messages,
-                tools: tools,
-                tool_choice: 'auto',
-                temperature: 0.1,
-                max_tokens: 1500
-            }, { headers });
-
-            const message = response.data.choices[0].message;
-            if (message && message.tool_calls && message.tool_calls.length > 1) {
-                message.tool_calls = [message.tool_calls[0]];
+            if (onChunk) {
+                return await this.generateCompletionStream(url, headers, messages, tools, onChunk);
+            } else {
+                return await this.generateCompletionStandard(url, headers, messages, tools);
             }
-            if (message && message.content && (!message.tool_calls || message.tool_calls.length === 0)) {
-                const content = message.content;
-                if (content.includes('<tool_code>') || content.includes('<tool_call>') || content.includes('<parameter=')) {
-                    const paramRegex = /<parameter=(\w+)>\s*([\s\S]*?)\s*<\/parameter>/g;
-                    const args: Record<string, any> = {};
-                    let match;
-                    while ((match = paramRegex.exec(content)) !== null) {
-                        const key = match[1];
-                        const val = match[2].trim();
-                        args[key] = val;
-                    }
-
-                    if (Object.keys(args).length > 0) {
-                        let toolName = 'execute_ios_command';
-                        if ('destination' in args) {
-                            toolName = 'ping_test';
-                        } else if ('mode' in args) {
-                            toolName = 'enable_ios_shell';
-                        } else if ('name' in args && 'value' in args) {
-                            toolName = 'define_shell_variable';
-                        } else if ('variable' in args && 'items' in args && 'command' in args) {
-                            toolName = 'execute_shell_loop';
-                            if (typeof args.items === 'string') {
-                                try {
-                                    args.items = JSON.parse(args.items);
-                                } catch {
-                                    args.items = args.items.split(/\s+/).filter(Boolean);
-                                }
-                            }
-                        } else if ('name' in args && 'body' in args) {
-                            toolName = 'define_shell_function';
-                        }
-
-                        message.tool_calls = [
-                            {
-                                id: `parsed_${Math.random().toString(36).substring(2, 11)}`,
-                                type: 'function',
-                                function: {
-                                    name: toolName,
-                                    arguments: JSON.stringify(args)
-                                }
-                            }
-                        ];
-                    }
-                }
-            }
-
-            return message;
         } catch (error: any) {
             let details = error.message;
             if (error.response && error.response.data) {
@@ -115,6 +68,241 @@ export class LLMClient {
                     : JSON.stringify(error.response.data);
             }
             throw new Error(`LLM Client Error [${this.provider}]: ${details}`);
+        }
+    }
+
+    private async generateCompletionStandard(
+        url: string,
+        headers: Record<string, string>,
+        messages: ChatMessage[],
+        tools: any[]
+    ): Promise<ChatMessage> {
+        const response = await axios.post(url, {
+            model: this.modelName,
+            messages: messages,
+            tools: tools,
+            tool_choice: 'auto',
+            temperature: 0.1,
+            max_tokens: 1500
+        }, { headers });
+
+        const message = response.data.choices[0].message;
+        if (message && message.tool_calls && message.tool_calls.length > 1) {
+            message.tool_calls = [message.tool_calls[0]];
+        }
+        if (message && message.content && (!message.tool_calls || message.tool_calls.length === 0)) {
+            this.fallbackRegexToolParsing(message);
+        }
+        return message;
+    }
+
+    private async generateCompletionStream(
+        url: string,
+        headers: Record<string, string>,
+        messages: ChatMessage[],
+        tools: any[],
+        onChunk: (data: { content?: string; reasoning?: string }) => void
+    ): Promise<ChatMessage> {
+        const response = await axios.post(url, {
+            model: this.modelName,
+            messages: messages,
+            tools: tools,
+            tool_choice: 'auto',
+            temperature: 0.1,
+            max_tokens: 1500,
+            stream: true
+        }, {
+            headers,
+            responseType: 'stream'
+        });
+
+        const stream = response.data;
+        const decoder = new StringDecoder('utf8');
+        let buffer = '';
+        let fullContent = '';
+        let fullReasoning = '';
+        const toolCallsAccumulator: any[] = [];
+
+        return new Promise((resolve, reject) => {
+            stream.on('data', (chunk: Buffer) => {
+                buffer += decoder.write(chunk);
+                const lines = buffer.split('\n');
+                buffer = lines.pop() || '';
+
+                for (let line of lines) {
+                    line = line.trim();
+                    if (!line) continue;
+                    if (line === 'data: [DONE]') continue;
+                    if (line.startsWith('data: ')) {
+                        const dataJson = line.slice(6);
+                        if (dataJson.trim() === '[DONE]') continue;
+                        try {
+                            const parsed = JSON.parse(dataJson);
+                            const choice = parsed.choices?.[0];
+                            if (!choice) continue;
+                            const delta = choice.delta;
+                            if (!delta) continue;
+
+                            const contentChunk = delta.content || '';
+                            if (contentChunk) {
+                                fullContent += contentChunk;
+                            }
+
+                            const reasoningChunk = delta.reasoning_content || delta.reasoning || delta.thought || '';
+                            if (reasoningChunk) {
+                                fullReasoning += reasoningChunk;
+                            }
+
+                            if (contentChunk || reasoningChunk) {
+                                onChunk({ content: contentChunk, reasoning: reasoningChunk });
+                            }
+
+                            if (delta.tool_calls) {
+                                for (const tc of delta.tool_calls) {
+                                    const idx = tc.index ?? 0;
+                                    if (!toolCallsAccumulator[idx]) {
+                                        toolCallsAccumulator[idx] = {
+                                            id: tc.id || '',
+                                            type: 'function',
+                                            function: {
+                                                name: tc.function?.name || '',
+                                                arguments: tc.function?.arguments || ''
+                                            }
+                                        };
+                                    } else {
+                                        if (tc.id) toolCallsAccumulator[idx].id = tc.id;
+                                        if (tc.function?.name) toolCallsAccumulator[idx].function.name = tc.function.name;
+                                        if (tc.function?.arguments) {
+                                            toolCallsAccumulator[idx].function.arguments += tc.function.arguments;
+                                        }
+                                    }
+                                }
+                            }
+                        } catch (e) {
+
+                        }
+                    }
+                }
+            });
+
+            stream.on('end', () => {
+                const remaining = buffer.trim();
+                if (remaining.startsWith('data: ')) {
+                    const dataJson = remaining.slice(6);
+                    if (dataJson.trim() !== '[DONE]') {
+                        try {
+                            const parsed = JSON.parse(dataJson);
+                            const choice = parsed.choices?.[0];
+                            if (choice && choice.delta) {
+                                const delta = choice.delta;
+                                const contentChunk = delta.content || '';
+                                if (contentChunk) {
+                                    fullContent += contentChunk;
+                                }
+                                const reasoningChunk = delta.reasoning_content || delta.reasoning || delta.thought || '';
+                                if (reasoningChunk) {
+                                    fullReasoning += reasoningChunk;
+                                }
+                                if (contentChunk || reasoningChunk) {
+                                    onChunk({ content: contentChunk, reasoning: reasoningChunk });
+                                }
+                                if (delta.tool_calls) {
+                                    for (const tc of delta.tool_calls) {
+                                        const idx = tc.index ?? 0;
+                                        if (!toolCallsAccumulator[idx]) {
+                                            toolCallsAccumulator[idx] = {
+                                                id: tc.id || '',
+                                                type: 'function',
+                                                function: {
+                                                    name: tc.function?.name || '',
+                                                    arguments: tc.function?.arguments || ''
+                                                }
+                                            };
+                                        } else {
+                                            if (tc.id) toolCallsAccumulator[idx].id = tc.id;
+                                            if (tc.function?.name) toolCallsAccumulator[idx].function.name = tc.function.name;
+                                            if (tc.function?.arguments) {
+                                                toolCallsAccumulator[idx].function.arguments += tc.function.arguments;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        } catch {}
+                    }
+                }
+
+                const finalToolCalls = toolCallsAccumulator.filter(Boolean);
+                const message: ChatMessage = {
+                    role: 'assistant',
+                    content: fullContent,
+                };
+                if (fullReasoning) {
+                    message.reasoning_content = fullReasoning;
+                }
+                if (finalToolCalls.length > 0) {
+                    message.tool_calls = finalToolCalls;
+                }
+
+                if (message.tool_calls && message.tool_calls.length > 1) {
+                    message.tool_calls = [message.tool_calls[0]];
+                }
+
+                if (message.content && (!message.tool_calls || message.tool_calls.length === 0)) {
+                    this.fallbackRegexToolParsing(message);
+                }
+
+                resolve(message);
+            });
+
+            stream.on('error', (err: any) => {
+                reject(err);
+            });
+        });
+    }
+
+    private fallbackRegexToolParsing(message: ChatMessage): void {
+        const content = message.content;
+        const paramRegex = /<parameter=(\w+)>\s*([\s\S]*?)\s*<\/parameter>/g;
+        const args: Record<string, any> = {};
+        let match;
+        while ((match = paramRegex.exec(content)) !== null) {
+            const key = match[1];
+            const val = match[2].trim();
+            args[key] = val;
+        }
+
+        if (Object.keys(args).length > 0) {
+            let toolName = 'execute_ios_command';
+            if ('destination' in args) {
+                toolName = 'ping_test';
+            } else if ('mode' in args) {
+                toolName = 'enable_ios_shell';
+            } else if ('name' in args && 'value' in args) {
+                toolName = 'define_shell_variable';
+            } else if ('variable' in args && 'items' in args && 'command' in args) {
+                toolName = 'execute_shell_loop';
+                if (typeof args.items === 'string') {
+                    try {
+                        args.items = JSON.parse(args.items);
+                    } catch {
+                        args.items = args.items.split(/\s+/).filter(Boolean);
+                    }
+                }
+            } else if ('name' in args && 'body' in args) {
+                toolName = 'define_shell_function';
+            }
+
+            message.tool_calls = [
+                {
+                    id: `parsed_${Math.random().toString(36).substring(2, 11)}`,
+                    type: 'function',
+                    function: {
+                        name: toolName,
+                        arguments: JSON.stringify(args)
+                    }
+                }
+            ];
         }
     }
 

@@ -1,6 +1,6 @@
 {
   "name": "ciscollm-cli",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "Cisco IOS automation agent CLI with mock simulation, guardrails, and LLM tool-calling support.",
   "main": "dist/index.js",
   "bin": {

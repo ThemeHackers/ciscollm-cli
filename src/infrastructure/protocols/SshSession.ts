@@ -46,10 +46,15 @@ export class SshSession extends BaseSession {
                             this.eventEmitter.removeListener('stream_updated', onStreamUpdate);
                             clearTimeout(connectTimeout);
                             this.updateStateFromPrompt(match[1]);
-                            console.log(chalk.cyan(`❯ Disabling pagination with 'terminal length 0'...`));
-                            await this.execute('terminal length 0').catch(err => {
-                                console.warn(chalk.yellow(`⚠ Failed to set terminal length 0: ${err.message}`));
-                            });
+                            console.log(chalk.cyan(`❯ Disabling pagination with standard commands...`));
+                            const paginationCommands = [
+                                'terminal length 0',
+                                'screen-length 0 temporary',
+                                'set cli screen-length 0'
+                            ];
+                            for (const cmd of paginationCommands) {
+                                await this.execute(cmd).catch(() => {});
+                            }
                             resolve();
                         }
                     };
@@ -68,13 +73,22 @@ export class SshSession extends BaseSession {
                 reject(new Error(`SSH Connection Error: ${err.message}`));
             });
 
+            this.client.on('keyboard-interactive', (name, instructions, instructionsLang, prompts, finish) => {
+                if (prompts.length > 0 && prompts[0].prompt.toLowerCase().includes('password')) {
+                    finish([this.config.password || '']);
+                } else {
+                    finish([]);
+                }
+            });
+
             this.client.connect({
                 host: this.config.host,
                 port: this.config.port || 22,
                 username: this.config.username,
                 password: this.config.password,
                 privateKey: this.config.privateKey,
-                readyTimeout: 15000
+                readyTimeout: 15000,
+                tryKeyboard: true
             });
         });
     }

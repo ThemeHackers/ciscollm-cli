@@ -20,23 +20,71 @@ export class PlinkSerialSession extends BaseSession {
 
     public async connect(): Promise<void> {
         return new Promise((resolve, reject) => {
-            const args = ['-batch', '-serial', this.comPort, '-sercfg', `${this.baudRate},8,n,1,N`];
-            
-            let plinkPath = 'plink.exe';
-            const localCwdPath = path.resolve(process.cwd(), 'plink.exe');
-            const projectRootPath = path.resolve(__dirname, '..', '..', '..', 'plink.exe');
-            const nextToExecPath = path.resolve(__dirname, 'plink.exe');
+            let cmd: string;
+            let args: string[];
 
-            if (fs.existsSync(localCwdPath)) {
-                plinkPath = localCwdPath;
-            } else if (fs.existsSync(projectRootPath)) {
-                plinkPath = projectRootPath;
-            } else if (fs.existsSync(nextToExecPath)) {
-                plinkPath = nextToExecPath;
+            const isWindows = process.platform === 'win32';
+            if (isWindows) {
+                cmd = 'plink.exe';
+                args = ['-batch', '-serial', this.comPort, '-sercfg', `${this.baudRate},8,n,1,N`];
+                
+                const localCwdPath = path.resolve(process.cwd(), 'plink.exe');
+                const projectRootPath = path.resolve(__dirname, '..', '..', '..', 'plink.exe');
+                const nextToExecPath = path.resolve(__dirname, 'plink.exe');
+
+                if (fs.existsSync(localCwdPath)) {
+                    cmd = localCwdPath;
+                } else if (fs.existsSync(projectRootPath)) {
+                    cmd = projectRootPath;
+                } else if (fs.existsSync(nextToExecPath)) {
+                    cmd = nextToExecPath;
+                }
+            } else {
+                const isCommandAvailable = (commandName: string): boolean => {
+                    try {
+                        const { execSync } = require('child_process');
+                        execSync(`which ${commandName}`, { stdio: 'ignore' });
+                        return true;
+                    } catch {
+                        return false;
+                    }
+                };
+
+                if (isCommandAvailable('picocom')) {
+                    cmd = 'picocom';
+                    args = ['-b', String(this.baudRate), this.comPort];
+                } else if (isCommandAvailable('socat')) {
+                    cmd = 'socat';
+                    args = ['-', `${this.comPort},b${this.baudRate},raw,echo=0`];
+                } else if (isCommandAvailable('screen')) {
+                    cmd = 'screen';
+                    args = [this.comPort, String(this.baudRate)];
+                } else if (isCommandAvailable('plink')) {
+                    cmd = 'plink';
+                    args = ['-batch', '-serial', this.comPort, '-sercfg', `${this.baudRate},8,n,1,N`];
+                } else {
+                    let plinkPath = 'plink';
+                    const localCwdPath = path.resolve(process.cwd(), 'plink');
+                    const projectRootPath = path.resolve(__dirname, '..', '..', '..', 'plink');
+                    const nextToExecPath = path.resolve(__dirname, 'plink');
+
+                    if (fs.existsSync(localCwdPath)) {
+                        plinkPath = localCwdPath;
+                    } else if (fs.existsSync(projectRootPath)) {
+                        plinkPath = projectRootPath;
+                    } else if (fs.existsSync(nextToExecPath)) {
+                        plinkPath = nextToExecPath;
+                    } else {
+                        reject(new Error(`No serial communication utility found. Please install one of: picocom, socat, screen, or plink.`));
+                        return;
+                    }
+                    cmd = plinkPath;
+                    args = ['-batch', '-serial', this.comPort, '-sercfg', `${this.baudRate},8,n,1,N`];
+                }
             }
 
-            console.log(chalk.cyan(`❯ Spawning connection via serial port ${this.comPort}...`));
-            this.process = spawn(plinkPath, args);
+            console.log(chalk.cyan(`❯ Spawning connection via serial port ${this.comPort} using ${cmd}...`));
+            this.process = spawn(cmd, args);
             this.process.stdin.setDefaultEncoding('utf-8');
 
             let finished = false;
@@ -81,10 +129,15 @@ export class PlinkSerialSession extends BaseSession {
                     this.eventEmitter.removeListener('stream_updated', onStreamUpdate);
                     clearTimeout(connectTimer);
                     this.updateStateFromPrompt(match[1]);
-                    console.log(chalk.cyan(`❯ Disabling pagination with 'terminal length 0'...`));
-                    await this.execute('terminal length 0').catch(err => {
-                        console.warn(chalk.yellow(`⚠ Failed to set terminal length 0: ${err.message}`));
-                    });
+                    console.log(chalk.cyan(`❯ Disabling pagination with standard commands...`));
+                    const paginationCommands = [
+                        'terminal length 0',
+                        'screen-length 0 temporary',
+                        'set cli screen-length 0'
+                    ];
+                    for (const cmd of paginationCommands) {
+                        await this.execute(cmd).catch(() => {});
+                    }
                     finished = true;
                     if (this.process) {
                         this.process.removeAllListeners('close');
@@ -223,21 +276,88 @@ export class PlinkSerialSession extends BaseSession {
     public static async listAvailableComPorts(): Promise<string[]> {
         return new Promise((resolve) => {
             const { exec } = require('child_process');
-            const cmd = 'reg query HKLM\\HARDWARE\\DEVICEMAP\\SERIALCOMM';
-            exec(cmd, (error: any, stdout: string) => {
-                if (error) {
+            const isWindows = process.platform === 'win32';
+            
+            if (!isWindows) {
+                try {
+                    const devFiles = fs.readdirSync('/dev');
+                    const ports: string[] = [];
+                    const isMac = process.platform === 'darwin';
+                    
+                    for (const file of devFiles) {
+                        const fullPath = path.join('/dev', file);
+                        if (isMac) {
+                            if (file.startsWith('cu.') || (file.startsWith('tty.') && (
+                                file.includes('usb') || 
+                                file.includes('serial') || 
+                                file.includes('uart') || 
+                                file.includes('modem') || 
+                                file.includes('Bluetooth')
+                            ))) {
+                                ports.push(fullPath);
+                            }
+                        } else {
+                            if (file.startsWith('ttyUSB') || file.startsWith('ttyACM') || file.startsWith('ttyS')) {
+                                ports.push(fullPath);
+                            }
+                        }
+                    }
+                    resolve(ports.sort());
+                } catch (err) {
                     resolve([]);
-                    return;
                 }
-                const ports: string[] = [];
-                const lines = stdout.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
-                for (const line of lines) {
-                    const match = /\b(COM\d+)\b/i.exec(line);
-                    if (match) {
-                        ports.push(match[1].toUpperCase());
+                return;
+            }
+
+
+            const psCmd = `powershell -Command "Get-CimInstance Win32_PnPEntity | Where-Object Name -like '*(COM*' | Select-Object -ExpandProperty Name"`;
+            exec(psCmd, { timeout: 4000 }, (psErr: any, psStdout: string) => {
+                if (!psErr && psStdout.trim()) {
+                    const ports: string[] = [];
+                    const lines = psStdout.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+                    for (const line of lines) {
+                        const match = /\((COM\d+)\)/i.exec(line);
+                        if (match) {
+                            const portNumber = match[1].toUpperCase();
+                            const friendlyName = line.replace(/\s*\(COM\d+\)\s*/i, '').trim();
+                            ports.push(`${portNumber} (${friendlyName})`);
+                        }
+                    }
+                    if (ports.length > 0) {
+                       
+                        ports.sort((a, b) => {
+                            const numA = parseInt((/COM(\d+)/i.exec(a) || [])[1] || '0', 10);
+                            const numB = parseInt((/COM(\d+)/i.exec(b) || [])[1] || '0', 10);
+                            return numA - numB;
+                        });
+                        resolve(ports);
+                        return;
                     }
                 }
-                resolve(ports);
+
+               
+                const regCmd = 'reg query HKLM\\HARDWARE\\DEVICEMAP\\SERIALCOMM';
+                exec(regCmd, { timeout: 3000 }, (regErr: any, regStdout: string) => {
+                    if (regErr) {
+                        resolve([]);
+                        return;
+                    }
+                    const ports: string[] = [];
+                    const lines = regStdout.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
+                    for (const line of lines) {
+                        const match = /\b(COM\d+)\b/i.exec(line);
+                        if (match) {
+                            ports.push(match[1].toUpperCase());
+                        }
+                    }
+
+                    ports.sort((a, b) => {
+                        const numA = parseInt((/COM(\d+)/i.exec(a) || [])[1] || '0', 10);
+                        const numB = parseInt((/COM(\d+)/i.exec(b) || [])[1] || '0', 10);
+                        return numA - numB;
+                    });
+                    resolve(ports);
+                });
             });
         });
     }

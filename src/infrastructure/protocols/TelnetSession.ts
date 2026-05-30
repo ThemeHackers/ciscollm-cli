@@ -49,30 +49,37 @@ export class TelnetSession extends BaseSession {
             const checkState = async () => {
                 const lowerBuf = this.buffer.toLowerCase();
                 
-                if (loginState === 'USER' && (lowerBuf.includes('username:') || lowerBuf.includes('login:'))) {
-                    console.log(chalk.cyan(`❯ Sending username...`));
-                    this.socket?.write(`${this.config.username || ''}\r\n`);
-                    this.buffer = '';
-                    loginState = 'PASS';
-                } else if (loginState === 'PASS' && lowerBuf.includes('password:')) {
+                
+                const match = PROMPT_REGEX.exec(this.buffer);
+                if (match) {
+                    clearTimeout(connectTimeout);
+                    this.eventEmitter.removeListener('stream_updated', checkState);
+                    this.updateStateFromPrompt(match[1]);
+                    console.log(chalk.green(`✔ Logged in successfully. Syncing terminal settings...`));
+                    
+                    const paginationCommands = [
+                        'terminal length 0',
+                        'screen-length 0 temporary',
+                        'set cli screen-length 0'
+                    ];
+                    for (const cmd of paginationCommands) {
+                        await this.execute(cmd).catch(() => {});
+                    }
+                    resolve();
+                    return;
+                }
+
+           
+                if ((loginState === 'USER' || loginState === 'PASS') && lowerBuf.includes('password:')) {
                     console.log(chalk.cyan(`❯ Sending password...`));
                     this.socket?.write(`${this.config.password || ''}\r\n`);
                     this.buffer = '';
                     loginState = 'PROMPT';
-                } else {
-                    const match = PROMPT_REGEX.exec(this.buffer);
-                    if (match) {
-                        clearTimeout(connectTimeout);
-                        this.eventEmitter.removeListener('stream_updated', checkState);
-                        this.updateStateFromPrompt(match[1]);
-                        console.log(chalk.green(`✔ Logged in successfully. Syncing terminal settings...`));
-                        
-                        
-                        await this.execute('terminal length 0').catch(err => {
-                            console.warn(chalk.yellow(`⚠ Failed to set terminal length 0: ${err.message}`));
-                        });
-                        resolve();
-                    }
+                } else if (loginState === 'USER' && (lowerBuf.includes('username:') || lowerBuf.includes('login:'))) {
+                    console.log(chalk.cyan(`❯ Sending username...`));
+                    this.socket?.write(`${this.config.username || ''}\r\n`);
+                    this.buffer = '';
+                    loginState = 'PASS';
                 }
             };
 

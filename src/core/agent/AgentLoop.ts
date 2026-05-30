@@ -8,7 +8,7 @@ import { CommandReferenceEngine } from './CommandReferenceEngine';
 import { ChatMessage, ToolCall } from '../../shared/types';
 import { CiscoAgentTools } from '../../infrastructure/llm/ToolDefinitions';
 import { execFile, exec } from 'child_process';
-import { logger, createSpinner } from '../../cli/ui/ui';
+import { logger, createSpinner, getTerminalWidth, StreamWordWrapper } from '../../cli/ui/ui';
 import chalk from 'chalk';
 import { PreExecutionValidator } from '../guardrails/PreExecutionValidator';
 import { AuditLogger } from '../guardrails/AuditLogger';
@@ -91,15 +91,6 @@ export class CiscoAgentLoop {
             refSpinner.succeed(
                 `Cisco command reference hints loaded${this.strictReferenceMode ? ' with strict-mode validation enabled' : ''}.`
             );
-            if (this.referenceTelemetry) {
-                logger.info(
-                    `[RefTelemetry] source=${telemetry.source} commands=${telemetry.commandCount} loadMs=${telemetry.durationMs} strict=${telemetry.strictMode ? 'on' : 'off'}`
-                );
-                logger.info(`[RefTelemetry] cache=${telemetry.cachePath}`);
-                if (telemetry.error) {
-                    logger.warn(`[RefTelemetry] detail=${telemetry.error}`);
-                }
-            }
         } catch (err: any) {
             this.commandHints = `Reference status: unavailable (${err.message}).`;
             refSpinner.warn('Cisco command reference hints unavailable. Continuing with base policy.');
@@ -149,6 +140,7 @@ export class CiscoAgentLoop {
                 return true;
             });
 
+            logger.modelStatus(this.llmClient.getModelName());
             const modelSpinner = createSpinner(`[Step ${executionDepth}/${MAX_STEPS}] Agent is thinking...`).start();
             
             let gpuTimer: NodeJS.Timeout | null = null;
@@ -166,20 +158,51 @@ export class CiscoAgentLoop {
             gpuTimer = setInterval(updateGpu, 1500);
 
             let response: ChatMessage;
+            let hasStartedStreaming = false;
+            const border = chalk.blue('│');
+            let wrapper: any = undefined;
+
+            const onChunk = (chunk: { content?: string; reasoning?: string }) => {
+                if (!hasStartedStreaming) {
+                    hasStartedStreaming = true;
+                    isThinking = false;
+                    if (gpuTimer) clearInterval(gpuTimer);
+                    modelSpinner.stop();
+                    logger.diamond(`Step ${executionDepth}/${MAX_STEPS} — Agent thought process:`);
+                    const totalWidth = getTerminalWidth();
+                    const title = '┌─── 🤖 Agent Reasoning (Streaming) ';
+                    const topBorder = chalk.blue(title + '─'.repeat(Math.max(0, totalWidth - title.length)));
+                    console.log(topBorder);
+                    process.stdout.write(`${border}  `);
+                    wrapper = new StreamWordWrapper(totalWidth - 4);
+                }
+
+                const text = (chunk.reasoning || chunk.content || '').replace(/\r/g, '');
+                if (text && wrapper) {
+                    wrapper.write(text);
+                }
+            };
+
             try {
-                response = await this.llmClient.generateCompletion(this.messages, activeTools);
+                response = await this.llmClient.generateCompletion(this.messages, activeTools, onChunk);
+                
                 isThinking = false;
                 if (gpuTimer) clearInterval(gpuTimer);
                 
-                const finalGpu = await this.getGpuInfoAsync();
-                const gpuSuffix = finalGpu ? ` [GPU: ${finalGpu}]` : '';
-                this.messages.push(response);
-                modelSpinner.succeed(`[Step ${executionDepth}/${MAX_STEPS}] Thinking complete.${gpuSuffix}`);
-                
-                const thoughts = response.reasoning_content || response.content;
-                if (thoughts && thoughts.trim()) {
-                    logger.reasoning(thoughts);
+                if (hasStartedStreaming) {
+                    if (wrapper) {
+                        wrapper.flush();
+                    }
+                    const totalWidth = getTerminalWidth();
+                    const bottomBorder = chalk.blue('└' + '─'.repeat(Math.max(0, totalWidth - 1)));
+                    console.log('\n' + bottomBorder + '\n');
+                } else {
+                    const finalGpu = await this.getGpuInfoAsync();
+                    const gpuSuffix = finalGpu ? ` [GPU: ${finalGpu}]` : '';
+                    modelSpinner.succeed(`[Step ${executionDepth}/${MAX_STEPS}] Thinking complete.${gpuSuffix}`);
                 }
+                
+                this.messages.push(response);
             } catch (err: any) {
                 isThinking = false;
                 if (gpuTimer) clearInterval(gpuTimer);
@@ -514,8 +537,6 @@ export class CiscoAgentLoop {
         const cmdSpinner = createSpinner(`[${targetDeviceId}] [Agent: ${assignedRole}] Executing command: "${cleanCommand}"...`).start();
         try {
             const session = this.coordinator.getSession(targetDeviceId)!;
-
-         
             const state = session.getState();
             if (/^show\s+/i.test(cleanCommand) && (state.currentMode === 'GLOBAL_CONFIG' || state.currentMode === 'INTERFACE_CONFIG')) {
                 await session.execute('end');
@@ -526,14 +547,16 @@ export class CiscoAgentLoop {
 
             const verification = ErrorAnalyzer.checkOutput(processedOutput);
             if (verification.hasError) {
-                cmdSpinner.fail(`[${targetDeviceId}] Command failed: "${cleanCommand}" (${verification.errorType})`);
+                cmdSpinner.stop();
+                logger.toolBox(`execute_ios_command running "${cleanCommand}" on ${targetDeviceId}`, `IOS Error [${verification.errorType}]:\n${processedOutput}`, false);
                 
                 const rbSpinner = createSpinner(`[${targetDeviceId}] Reverting configuration changes...`).start();
                 let rollbackLogs = '';
                 if (tx) {
                     rollbackLogs = await tx.executeRollback(session, cleanCommand);
                 }
-                rbSpinner.succeed(`[${targetDeviceId}] Rollback execution complete.`);
+                rbSpinner.stop();
+                logger.toolBox(`automated_rollback on ${targetDeviceId}`, rollbackLogs || 'Rollback completed.', false);
 
               
                 AuditLogger.log({
@@ -552,9 +575,9 @@ export class CiscoAgentLoop {
                     `IOS Error [${verification.errorType}]:\n${processedOutput}\n\nAutomated configuration rollback executed:\n${rollbackLogs}`
                 );
             } else {
-                cmdSpinner.succeed(`[${targetDeviceId}] Command completed: "${cleanCommand}"`);
+                cmdSpinner.stop();
+                logger.toolBox(`execute_ios_command running "${cleanCommand}" on ${targetDeviceId}`, processedOutput, true);
 
-              
                 const snapshotB = await this.captureDeviceSnapshot(targetDeviceId);
                 let diffSummary = '';
                 if (snapshotA && snapshotB) {
@@ -565,7 +588,6 @@ export class CiscoAgentLoop {
                     }
                 }
 
-              
                 AuditLogger.log({
                     timestamp: new Date().toISOString(),
                     deviceId: targetDeviceId,
@@ -773,7 +795,6 @@ export class CiscoAgentLoop {
         const requestedDevice = args.device;
 
         if (requestedDevice) {
-            
             let targetDeviceId: string;
             try {
                 targetDeviceId = this.resolveTargetDevice(requestedDevice);
@@ -791,19 +812,21 @@ export class CiscoAgentLoop {
                 const isFail = successMatch ? parseInt(successMatch[1], 10) === 0 : pingOutput.includes('.....');
                 
                 if (isFail) {
-                    pingSpinner.fail(`[${targetDeviceId}] Remote ping to ${destination} failed.`);
+                    pingSpinner.stop();
                     const failReason = `Remote ping failed from device "${targetDeviceId}" to ${destination}. Success rate is 0%. Analyze routing table, interfaces, and trunk links to troubleshoot.`;
+                    logger.toolBox(`ping_test from ${targetDeviceId} to ${destination}`, `PING TEST FAILED:\n${pingOutput}\n\n[Diagnostic Alert]: ${failReason}`, false);
                     this.injectToolResponse(call.id, 'ping_test', `PING TEST FAILED:\n${pingOutput}\n\n[Diagnostic Alert]: ${failReason}`);
                 } else {
-                    pingSpinner.succeed(`[${targetDeviceId}] Remote ping to ${destination} succeeded.`);
+                    pingSpinner.stop();
+                    logger.toolBox(`ping_test from ${targetDeviceId} to ${destination}`, pingOutput, true);
                     this.injectToolResponse(call.id, 'ping_test', pingOutput);
                 }
             } catch (err: any) {
-                pingSpinner.fail(`[${targetDeviceId}] Remote ping request errored.`);
+                pingSpinner.stop();
+                logger.toolBox(`ping_test from ${targetDeviceId} to ${destination}`, `Cisco Remote Ping Error: ${err.message}`, false);
                 this.injectToolResponse(call.id, 'ping_test', `Cisco Remote Ping Error: ${err.message}`);
             }
         } else {
-            
             const pingSpinner = createSpinner(`Executing local host ping to ${destination}...`).start();
             const hostPingOutput = await this.pingFromHost(destination);
             
@@ -813,11 +836,13 @@ export class CiscoAgentLoop {
                            hostPingOutput.includes('PING FAILED');
 
             if (isLost) {
-                pingSpinner.fail(`Local host ping to ${destination} failed.`);
+                pingSpinner.stop();
                 const failReason = `Local host ping failed to destination ${destination}. Connection is unreachable. Verify router interfaces and routing configurations.`;
+                logger.toolBox(`ping_test from Local Host to ${destination}`, `PING TEST FAILED:\n${hostPingOutput}\n\n[Diagnostic Alert]: ${failReason}`, false);
                 this.injectToolResponse(call.id, 'ping_test', `PING TEST FAILED:\n${hostPingOutput}\n\n[Diagnostic Alert]: ${failReason}`);
             } else {
-                pingSpinner.succeed(`Local host ping to ${destination} succeeded.`);
+                pingSpinner.stop();
+                logger.toolBox(`ping_test from Local Host to ${destination}`, hostPingOutput, true);
                 this.injectToolResponse(call.id, 'ping_test', hostPingOutput);
             }
         }

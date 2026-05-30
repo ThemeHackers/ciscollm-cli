@@ -8,7 +8,7 @@ import { SshSession } from './infrastructure/protocols/SshSession';
 import { TelnetSession } from './infrastructure/protocols/TelnetSession';
 import { LLMClient, LLMProvider } from './infrastructure/llm/LLMClient';
 import { CiscoAgentLoop } from './core/agent/AgentLoop';
-import { MockSession } from './infrastructure/protocols/MockSession';
+
 import { NetconfSession } from './infrastructure/protocols/NetconfSession';
 import { CmlSession } from './infrastructure/protocols/CmlSession';
 import { logger, createSpinner } from './cli/ui/ui';
@@ -72,7 +72,7 @@ program
 program
     .command('run')
     .description('Execute network configuration or optimization tasks on target Cisco hardware')
-    .option('--protocol <type>', 'Connection protocol (serial | ssh | telnet | mock | netconf | cml)', 'serial')
+    .option('--protocol <type>', 'Connection protocol (serial | ssh | telnet | netconf | cml)', 'serial')
     
     .option('--provider <type>', 'LLM provider mode (local | cloud)', 'local')
     .option('--api-key <key>', 'API key for cloud provider (OpenRouter)')
@@ -132,7 +132,8 @@ program
             process.env.CISCOLLM_NON_INTERACTIVE = 'true';
         }
 
-     
+        logger.banner();
+
         if (goal && !localType && provider === 'local') {
             const { chosenLocalType } = await inquirer.prompt([
                 {
@@ -163,12 +164,7 @@ program
 
         
         if (!goal) {
-            logger.heading('Cisco LLM Agent Interactive Setup Wizard');
-
             const detectedComs = await PlinkSerialSession.listAvailableComPorts();
-            if (detectedComs.length > 0) {
-                logger.info(`Detected active COM ports on system: ${chalk.bold.yellow(detectedComs.join(', '))}`);
-            }
 
             type StepName = 
                 | 'PROVIDER'
@@ -226,9 +222,12 @@ program
 
             const refreshConsole = () => {
                 console.clear();
-                logger.heading('Cisco LLM Agent Interactive Setup Wizard');
+                logger.banner();
                 if (detectedComs.length > 0) {
-                    logger.info(`Detected active COM ports on system: ${chalk.bold.yellow(detectedComs.join(', '))}`);
+                    logger.info('Detected active COM ports on system:');
+                    for (const port of detectedComs) {
+                        console.log(`   ${chalk.yellow('•')} ${chalk.yellow(port)}`);
+                    }
                 }
                 console.log('');
             };
@@ -357,7 +356,6 @@ program
                                     { name: 'telnet', value: 'telnet' },
                                     { name: 'netconf', value: 'netconf' },
                                     { name: 'cml', value: 'cml' },
-                                    { name: 'mock', value: 'mock' },
                                     { name: chalk.dim('< Go Back'), value: '__back__' }
                                 ],
                                 default: answers.protocol
@@ -385,7 +383,11 @@ program
 
                     case 'SERIAL_COM': {
                         if (detectedComs.length > 0) {
-                            const choices = detectedComs.map(port => ({ name: port, value: port }));
+                            const choices = detectedComs.map(port => {
+                                const match = /^(COM\d+)\b/i.exec(port);
+                                const portValue = match ? match[1].toUpperCase() : port;
+                                return { name: port, value: portValue };
+                            });
                             choices.push({ name: 'Enter COM port(s) manually', value: '__manual__' });
                             choices.push({ name: chalk.dim('< Go Back'), value: '__back__' });
 
@@ -760,12 +762,7 @@ program
                     });
                     activeCoordinator.registerSession(h, session);
                 }
-            } else if (protocol === 'mock') {
-                const names = (com || host || 'Switch1').split(',').map((n: string) => n.trim()).filter((n: string) => n.length > 0);
-                for (const name of names) {
-                    const session = new MockSession(name);
-                    activeCoordinator.registerSession(name, session);
-                }
+
             } else if (protocol === 'netconf') {
                 if (!host) {
                     throw new Error('Host (--host) is required for NETCONF protocol connections.');
