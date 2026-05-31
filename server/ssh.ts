@@ -2,7 +2,7 @@ import { Server } from 'ssh2';
 import { generateKeyPairSync } from 'crypto';
 import { ShellSimulator } from './shell-simulator';
 
-// Generate a host key dynamically so no pre-configured keys are needed
+
 const { privateKey } = generateKeyPairSync('rsa', {
     modulusLength: 2048,
     publicKeyEncoding: { type: 'spki', format: 'pem' },
@@ -18,7 +18,7 @@ export function startSshServer(port: number, onLog: (msg: string) => void): Serv
         client.on('authentication', (ctx: any) => {
             username = ctx.username;
             onLog(`SSH Auth attempt: User "${ctx.username}" via method "${ctx.method}"`);
-            // Accept any password / key for mock testing purposes
+
             ctx.accept();
         });
 
@@ -31,7 +31,7 @@ export function startSshServer(port: number, onLog: (msg: string) => void): Serv
                     accept();
                 });
 
-                // 1. Handle Shell Request
+
                 session.on('shell', (accept: any, reject: any) => {
                     const channel = accept();
                     onLog(`SSH Session: Shell channel opened for "${username}"`);
@@ -57,7 +57,7 @@ export function startSshServer(port: number, onLog: (msg: string) => void): Serv
                         try {
                             const output = simulator.execute(cmd);
                             if (output) {
-                                // Format output newlines for SSH console
+
                                 channel.write(output.replace(/\n/g, '\r\n') + '\r\n');
                             }
                         } catch (err: any) {
@@ -69,26 +69,26 @@ export function startSshServer(port: number, onLog: (msg: string) => void): Serv
                     channel.on('data', (data: Buffer) => {
                         const input = data.toString('utf8');
                         
-                        // Process character by character
+
                         for (let i = 0; i < input.length; i++) {
                             const char = input.charCodeAt(i);
 
-                            if (char === 13) { // Carriage Return (CR)
+                            if (char === 13) {
                                 lastWasCr = true;
                                 handleLine();
-                            } else if (char === 10) { // Line Feed (LF)
+                            } else if (char === 10) {
                                 if (lastWasCr) {
                                     lastWasCr = false;
                                     continue;
                                 }
                                 handleLine();
-                            } else if (char === 127 || char === 8) { // Backspace or Delete
+                            } else if (char === 127 || char === 8) {
                                 lastWasCr = false;
                                 if (lineBuffer.length > 0) {
                                     lineBuffer = lineBuffer.slice(0, -1);
                                     channel.write('\b \b');
                                 }
-                            } else if (char === 3) { // Ctrl+C
+                            } else if (char === 3) {
                                 lastWasCr = false;
                                 channel.write('^C\r\n');
                                 lineBuffer = '';
@@ -97,7 +97,7 @@ export function startSshServer(port: number, onLog: (msg: string) => void): Serv
                                 lastWasCr = false;
                                 const rawChar = input[i];
                                 lineBuffer += rawChar;
-                                channel.write(rawChar); // Echo back
+                                channel.write(rawChar);
                             }
                         }
                     });
@@ -107,7 +107,7 @@ export function startSshServer(port: number, onLog: (msg: string) => void): Serv
                     });
                 });
 
-                // 2. Handle NETCONF Subsystem Request
+
                 session.on('subsystem', (accept: any, reject: any, info: any) => {
                     if (info.name === 'netconf') {
                         const channel = accept();
@@ -116,7 +116,7 @@ export function startSshServer(port: number, onLog: (msg: string) => void): Serv
                         let buffer = '';
                         let framing: '1.0' | '1.1' = '1.0';
 
-                        // Send Server Hello
+
                         const helloMsg = `<?xml version="1.0" encoding="UTF-8"?>
 <hello xmlns="urn:ietf:params:xml:ns:netconf:base:1.0">
   <capabilities>
@@ -141,7 +141,7 @@ export function startSshServer(port: number, onLog: (msg: string) => void): Serv
                                     
                                     processNetconfMessage(msg);
                                 } else {
-                                    // 1.1 Framing: \n#${len}\n${payload}\n##\n
+
                                     const match = buffer.match(/^\r?\n#(\d+)\r?\n/);
                                     if (!match) break;
                                     
@@ -149,13 +149,13 @@ export function startSshServer(port: number, onLog: (msg: string) => void): Serv
                                     const len = parseInt(match[1], 10);
                                     const payloadStart = match.index! + header.length;
                                     
-                                    if (buffer.length < payloadStart + len + 4) break; // Not enough data yet
+                                    if (buffer.length < payloadStart + len + 4) break;
                                     
                                     const payload = buffer.slice(payloadStart, payloadStart + len);
                                     const tail = buffer.slice(payloadStart + len, payloadStart + len + 4);
                                     
                                     if (!tail.includes('##')) {
-                                        // Error parsing framing
+
                                         onLog(`NETCONF 1.1 Framing Error. Tail is: ${JSON.stringify(tail)}`);
                                         channel.end();
                                         break;
@@ -180,7 +180,7 @@ export function startSshServer(port: number, onLog: (msg: string) => void): Serv
                             onLog(`NETCONF RPC Received: ${xml.trim().substring(0, 100)}...`);
                             
                             if (xml.includes('<hello')) {
-                                // Peer hello exchange
+
                                 if (xml.includes('netconf:base:1.1')) {
                                     framing = '1.1';
                                     onLog(`NETCONF Framed Negotiated: 1.1`);
@@ -191,7 +191,7 @@ export function startSshServer(port: number, onLog: (msg: string) => void): Serv
                                 return;
                             }
 
-                            // Extract message-id
+
                             const msgIdMatch = /message-id=["']([^"']+)["']/i.exec(xml);
                             const messageId = msgIdMatch ? msgIdMatch[1] : '1';
 

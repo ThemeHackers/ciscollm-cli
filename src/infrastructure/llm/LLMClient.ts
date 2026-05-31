@@ -85,12 +85,33 @@ export class LLMClient {
         }
     }
 
+    private estimatePromptTokens(messages: ChatMessage[]): number {
+        let text = '';
+        for (const msg of messages) {
+            text += `${msg.role} ${msg.content || ''}\n`;
+            if (msg.reasoning_content) text += `${msg.reasoning_content}\n`;
+        }
+        return Math.ceil(text.length / 3.8);
+    }
+
+    private estimateCompletionTokens(message: ChatMessage): number {
+        let text = message.content || '';
+        if (message.reasoning_content) {
+            text += message.reasoning_content;
+        }
+        if (message.tool_calls) {
+            text += JSON.stringify(message.tool_calls);
+        }
+        return Math.ceil(text.length / 3.6);
+    }
+
     private async generateCompletionStandard(
         url: string,
         headers: Record<string, string>,
         messages: ChatMessage[],
         tools: any[]
     ): Promise<ChatMessage> {
+        const startTime = Date.now();
         const response = await axios.post(url, {
             model: this.modelName,
             messages: messages,
@@ -100,6 +121,7 @@ export class LLMClient {
             max_tokens: 1500
         }, { headers });
 
+        const duration_ms = Math.max(1, Date.now() - startTime);
         const message = response.data.choices[0].message;
         if (message && message.tool_calls && message.tool_calls.length > 1) {
             message.tool_calls = [message.tool_calls[0]];
@@ -107,6 +129,31 @@ export class LLMClient {
         if (message && message.content && (!message.tool_calls || message.tool_calls.length === 0)) {
             this.fallbackRegexToolParsing(message);
         }
+
+        let prompt_tokens = 0;
+        let completion_tokens = 0;
+        let total_tokens = 0;
+
+        if (response.data.usage) {
+            prompt_tokens = response.data.usage.prompt_tokens || 0;
+            completion_tokens = response.data.usage.completion_tokens || 0;
+            total_tokens = response.data.usage.total_tokens || 0;
+        } else {
+            prompt_tokens = this.estimatePromptTokens(messages);
+            completion_tokens = this.estimateCompletionTokens(message);
+            total_tokens = prompt_tokens + completion_tokens;
+        }
+
+        const tok_sec = parseFloat((completion_tokens / (duration_ms / 1000)).toFixed(2));
+
+        message.usage = {
+            prompt_tokens,
+            completion_tokens,
+            total_tokens,
+            duration_ms,
+            tok_sec
+        };
+
         return message;
     }
 
@@ -117,6 +164,7 @@ export class LLMClient {
         tools: any[],
         onChunk: (data: { content?: string; reasoning?: string }) => void
     ): Promise<ChatMessage> {
+        const startTime = Date.now();
         const response = await axios.post(url, {
             model: this.modelName,
             messages: messages,
@@ -124,7 +172,8 @@ export class LLMClient {
             tool_choice: 'auto',
             temperature: 0.1,
             max_tokens: 1500,
-            stream: true
+            stream: true,
+            stream_options: { include_usage: true }
         }, {
             headers,
             responseType: 'stream'
@@ -136,6 +185,7 @@ export class LLMClient {
         let fullContent = '';
         let fullReasoning = '';
         const toolCallsAccumulator: any[] = [];
+        let streamUsage: any = undefined;
 
         return new Promise((resolve, reject) => {
             stream.on('data', (chunk: Buffer) => {
@@ -152,6 +202,9 @@ export class LLMClient {
                         if (dataJson.trim() === '[DONE]') continue;
                         try {
                             const parsed = JSON.parse(dataJson);
+                            if (parsed.usage) {
+                                streamUsage = parsed.usage;
+                            }
                             const choice = parsed.choices?.[0];
                             if (!choice) continue;
                             const delta = choice.delta;
@@ -206,6 +259,9 @@ export class LLMClient {
                     if (dataJson.trim() !== '[DONE]') {
                         try {
                             const parsed = JSON.parse(dataJson);
+                            if (parsed.usage) {
+                                streamUsage = parsed.usage;
+                            }
                             const choice = parsed.choices?.[0];
                             if (choice && choice.delta) {
                                 const delta = choice.delta;
@@ -246,6 +302,8 @@ export class LLMClient {
                     }
                 }
 
+                const duration_ms = Math.max(1, Date.now() - startTime);
+
                 const finalToolCalls = toolCallsAccumulator.filter(Boolean);
                 const message: ChatMessage = {
                     role: 'assistant',
@@ -265,6 +323,30 @@ export class LLMClient {
                 if (message.content && (!message.tool_calls || message.tool_calls.length === 0)) {
                     this.fallbackRegexToolParsing(message);
                 }
+
+                let prompt_tokens = 0;
+                let completion_tokens = 0;
+                let total_tokens = 0;
+
+                if (streamUsage) {
+                    prompt_tokens = streamUsage.prompt_tokens || 0;
+                    completion_tokens = streamUsage.completion_tokens || 0;
+                    total_tokens = streamUsage.total_tokens || 0;
+                } else {
+                    prompt_tokens = this.estimatePromptTokens(messages);
+                    completion_tokens = this.estimateCompletionTokens(message);
+                    total_tokens = prompt_tokens + completion_tokens;
+                }
+
+                const tok_sec = parseFloat((completion_tokens / (duration_ms / 1000)).toFixed(2));
+
+                message.usage = {
+                    prompt_tokens,
+                    completion_tokens,
+                    total_tokens,
+                    duration_ms,
+                    tok_sec
+                };
 
                 resolve(message);
             });

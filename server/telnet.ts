@@ -33,11 +33,11 @@ export function startTelnetServer(port: number, onLog: (msg: string) => void): n
                 authState = 'ACTIVE';
                 onLog(`Telnet Authenticated user: "${username}"`);
                 
-                // Write welcome prompt
+
                 const welcomeBanner = `\r\nCisco IOS Software, C2960 Software (C2960-LANBASEK9-M), Version 15.0(2)SE4, RELEASE SOFTWARE (fc1)\r\nTechnical Support: http://www.cisco.com/techsupport\r\nCopyright (c) 1986-2013 by Cisco Systems, Inc.\r\nCompiled Wed 26-Jun-13 02:49 by prod_rel_team\r\n\r\n`;
                 socket.write(welcomeBanner + simulator.getPrompt());
             } else {
-                // SHELL ACTIVE MODE
+
                 if (cmd.toLowerCase() === 'exit' && simulator.mode === 'USER_EXEC') {
                     socket.write('Connection closed by foreign host.\r\n');
                     socket.end();
@@ -64,14 +64,14 @@ export function startTelnetServer(port: number, onLog: (msg: string) => void): n
                 const byte = data[i];
                 if (byte === 255) { 
                     const cmd = data[i + 1];
-                    if (cmd >= 251 && cmd <= 254) { // WILL/WONT/DO/DONT
-                        // Negotiate back: DO (253) / DONT (254)
+                    if (cmd >= 251 && cmd <= 254) {
+
                         const option = data[i + 2];
                         const response = Buffer.from([255, cmd === 251 ? 253 : 252, option]);
                         socket.write(response);
                         i += 3;
                     } else {
-                        i += 2; // skip other commands
+                        i += 2;
                     }
                 } else {
                     cleaned.push(byte);
@@ -86,25 +86,25 @@ export function startTelnetServer(port: number, onLog: (msg: string) => void): n
             for (let j = 0; j < input.length; j++) {
                 const char = input.charCodeAt(j);
 
-                if (char === 13) { // CR
+                if (char === 13) {
                     lastWasCr = true;
                     handleLine();
-                } else if (char === 10) { // LF
+                } else if (char === 10) {
                     if (lastWasCr) {
                         lastWasCr = false;
                         continue;
                     }
                     handleLine();
-                } else if (char === 127 || char === 8) { // Backspace or Delete
+                } else if (char === 127 || char === 8) {
                     lastWasCr = false;
                     if (lineBuffer.length > 0) {
                         lineBuffer = lineBuffer.slice(0, -1);
-                        // Only visually erase if we are not typing a password
+
                         if (authState !== 'NEEDS_PASS') {
                             socket.write('\b \b');
                         }
                     }
-                } else if (char === 3) { // Ctrl+C
+                } else if (char === 3) {
                     lastWasCr = false;
                     socket.write('^C\r\n');
                     lineBuffer = '';
@@ -119,7 +119,7 @@ export function startTelnetServer(port: number, onLog: (msg: string) => void): n
                     lastWasCr = false;
                     const rawChar = input[j];
                     lineBuffer += rawChar;
-                    // Do not echo passwords
+
                     if (authState !== 'NEEDS_PASS') {
                         socket.write(rawChar);
                     }

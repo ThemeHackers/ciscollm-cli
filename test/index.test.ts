@@ -227,6 +227,55 @@ assert.ok(rpcReq.includes('message-id="test-msg-123"'), 'RPC request builder sho
 console.log(' -> NetconfSession Framing and Parsing test passed.');
 
 
+console.log('\n[Test 13]: Evaluating LLMClient Token Estimation...');
+const testClient = new LLMClient('local');
+const promptTokens = (testClient as any).estimatePromptTokens([
+    { role: 'user', content: 'hello' },
+    { role: 'assistant', content: 'hi there' }
+]);
+assert.ok(promptTokens > 0, 'Prompt tokens should be estimated to a non-zero value');
+const completionTokens = (testClient as any).estimateCompletionTokens({
+    role: 'assistant',
+    content: 'test message content here'
+});
+assert.ok(completionTokens > 0, 'Completion tokens should be estimated to a non-zero value');
+console.log(' -> LLMClient Token Estimation test passed.');
+
+
+console.log('\n[Test 14]: Evaluating AgentLoop Stats Tracking and Grand Summary...');
+const mockLLMForStats = {
+    getModelName: () => 'mock-model',
+    generateCompletion: async (messages: any[], tools: any[], onChunk: any) => {
+        return {
+            role: 'assistant',
+            content: 'Task completed successfully.',
+            usage: {
+                prompt_tokens: 100,
+                completion_tokens: 50,
+                total_tokens: 150,
+                duration_ms: 1200,
+                tok_sec: 41.67
+            }
+        };
+    }
+} as any;
+
+const mockCoordinator = {
+    getSessions: () => new Map(),
+    getAllStates: () => ({}),
+    getTopology: () => ({ nodes: [], links: [] }),
+    discoverTopology: async () => {}
+} as any;
+
+const agentLoopForStats = new CiscoAgentLoop(mockLLMForStats, mockCoordinator);
+agentLoopForStats.run('Simple mock goal').then(() => {
+    console.log(' -> AgentLoop Stats Tracking test passed.');
+}).catch((err) => {
+    console.error(' -> AgentLoop Stats Tracking test FAILED:', err);
+    process.exit(1);
+});
+
+
 console.log('\n[Test 12]: Evaluating PlinkSerialSession listAvailableComPorts...');
 PlinkSerialSession.listAvailableComPorts().then((ports) => {
     assert.ok(Array.isArray(ports), 'COM ports query should return an array');

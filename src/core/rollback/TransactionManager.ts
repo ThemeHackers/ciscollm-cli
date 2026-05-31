@@ -135,11 +135,11 @@ export class TransactionManager {
     public async executeRollback(session: BaseSession, failedCommand?: string): Promise<string> {
         console.warn(chalk.red('[!] Safety rollback triggered!'));
 
-        // Capture the state before rollback
+
         const stateBeforeRollback = session.getState();
         const modeBeforeRollback = stateBeforeRollback.currentMode;
 
-        // Clean the context stack from the failed command if applicable
+
         const savedContext = [...this.contextStack];
         if (failedCommand) {
             const cleanFailed = failedCommand.trim().toLowerCase();

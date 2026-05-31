@@ -68,6 +68,12 @@ export class CiscoAgentLoop {
     }
 
     public async run(userGoal: string): Promise<void> {
+        const totalStartTime = Date.now();
+        let totalPromptTokens = 0;
+        let totalCompletionTokens = 0;
+        let totalTokens = 0;
+        let totalLlmDurationMs = 0;
+
         const backupSpinner = createSpinner('Initializing device configuration backups to flash...').start();
         try {
             
@@ -205,9 +211,9 @@ export class CiscoAgentLoop {
             };
 
             try {
-                response = await this.llmClient.generateCompletion(this.messages, activeTools, onChunk);
+                response = await this.llmClient.generateCompletion(this.getMessagesForLlm(), activeTools, onChunk);
                 
-                isThinking = false;
+   isThinking = false;
                 if (gpuTimer) clearInterval(gpuTimer);
                 
                 if (hasStartedStreaming) {
@@ -221,6 +227,21 @@ export class CiscoAgentLoop {
                     const finalGpu = await this.getGpuInfoAsync();
                     const gpuSuffix = finalGpu ? ` [GPU: ${finalGpu}]` : '';
                     modelSpinner.succeed(`[Step ${executionDepth}/${MAX_STEPS}] Thinking complete.${gpuSuffix}`);
+                }
+
+                if (response.usage) {
+                    totalPromptTokens += response.usage.prompt_tokens;
+                    totalCompletionTokens += response.usage.completion_tokens;
+                    totalTokens += response.usage.total_tokens;
+                    totalLlmDurationMs += response.usage.duration_ms;
+
+                    const tokSecStr = chalk.cyan(`${response.usage.tok_sec.toFixed(1)} tok/sec`);
+                    const promptStr = chalk.gray(`Prompt:`) + ` ${response.usage.prompt_tokens} t`;
+                    const compStr = chalk.gray(`Completion:`) + ` ${response.usage.completion_tokens} t`;
+                    const totalStr = chalk.gray(`Total:`) + ` ${response.usage.total_tokens} t`;
+                    const timeStr = chalk.gray(`Time:`) + ` ${(response.usage.duration_ms / 1000).toFixed(2)}s`;
+                    
+                    logger.info(`${chalk.bold.yellow('⚡')} LLM Stats: ${tokSecStr} | ${promptStr} | ${compStr} | ${totalStr} | ${timeStr}`);
                 }
                 
                 this.messages.push(response);
@@ -287,6 +308,20 @@ export class CiscoAgentLoop {
         if (executionDepth >= MAX_STEPS && dynamicLoopActive) {
             logger.warn('Maximum loop steps limit reached.');
         }
+
+        const totalDurationMs = Date.now() - totalStartTime;
+        const avgLlmSpeed = totalLlmDurationMs > 0 ? (totalCompletionTokens / (totalLlmDurationMs / 1000)) : 0;
+
+        const line = '━'.repeat(50);
+        console.log('\n' + chalk.magenta.bold(`  ┏${line}┓`));
+        console.log(chalk.magenta.bold(`  ┃  ${chalk.white.bold('GRAND AGENT RUN EXECUTION SUMMARY')}               ┃`));
+        console.log(chalk.magenta.bold(`  ┗${line}┛`));
+        console.log(`  ${chalk.yellow('•')} ${chalk.gray('Total Run Duration:')}       ${chalk.bold.white((totalDurationMs / 1000).toFixed(2))}s`);
+        console.log(`  ${chalk.yellow('•')} ${chalk.gray('Total LLM Think Time:')}     ${chalk.bold.white((totalLlmDurationMs / 1000).toFixed(2))}s`);
+        console.log(`  ${chalk.yellow('•')} ${chalk.gray('Total Prompt Tokens:')}      ${chalk.bold.white(totalPromptTokens)} tokens`);
+        console.log(`  ${chalk.yellow('•')} ${chalk.gray('Total Completion Tokens:')}  ${chalk.bold.white(totalCompletionTokens)} tokens`);
+        console.log(`  ${chalk.yellow('•')} ${chalk.gray('Total Tokens Consumed:')}    ${chalk.bold.white(totalTokens)} tokens`);
+        console.log(`  ${chalk.yellow('•')} ${chalk.gray('Average LLM Generation:')}   ${chalk.bold.cyan(avgLlmSpeed.toFixed(1))} tok/sec\n`);
     }
 
     private async buildTopologyInfoString(): Promise<string> {
@@ -934,5 +969,24 @@ export class CiscoAgentLoop {
                 }
             );
         });
+    }
+
+    private getMessagesForLlm(): ChatMessage[] {
+        if (this.messages.length <= 8) {
+            return this.messages;
+        }
+
+        const result: ChatMessage[] = [
+            this.messages[0], // System prompt
+            this.messages[1]  // User original goal
+        ];
+
+        result.push({
+            role: 'system',
+            content: `[System Notice: To prevent token overflow, older turn history has been truncated. The last 6 messages are shown below.]`
+        });
+
+        result.push(...this.messages.slice(-6));
+        return result;
     }
 }

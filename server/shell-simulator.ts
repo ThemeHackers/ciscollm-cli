@@ -21,7 +21,7 @@ export interface RouteState {
 
 export class ShellSimulator {
     public hostname: string = 'Switch1';
-    public mode: CliMode = 'PRIVILEGED_EXEC'; // Default start in privileged mode
+    public mode: CliMode = 'PRIVILEGED_EXEC';
     public activeInterface: string | null = null;
     
     public interfaces: Map<string, InterfaceState> = new Map([
@@ -65,7 +65,7 @@ export class ShellSimulator {
         }
     ];
 
-    // Shell processing
+
     public shellEnabled: boolean = false;
     public shellVariables: Record<string, string> = {};
     public shellFunctions: Record<string, string> = {};
@@ -101,9 +101,9 @@ export class ShellSimulator {
         const trimmed = line.trim();
         if (!trimmed) return '';
 
-        // Handle shell loop / terminal shell processing
+
         if (this.shellEnabled) {
-            // Check for variable assignment
+
             const varMatch = trimmed.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
             if (varMatch) {
                 const [, name, val] = varMatch;
@@ -111,7 +111,7 @@ export class ShellSimulator {
                 return '';
             }
 
-            // Check for simple shell function definition (one-liner)
+
             const funcMatch = trimmed.match(/^([A-Za-z_][A-Za-z0-9_]*)\(\)\s*{(.*)}$/);
             if (funcMatch) {
                 const [, name, body] = funcMatch;
@@ -120,10 +120,22 @@ export class ShellSimulator {
             }
         }
 
-        const args = trimmed.split(/\s+/);
+        let commandToExecute = trimmed;
+        const tempArgs = commandToExecute.split(/\s+/);
+        const tempCmd = tempArgs[0].toLowerCase();
+
+        const isConfigMode = this.mode !== 'USER_EXEC' && this.mode !== 'PRIVILEGED_EXEC';
+        if (tempCmd === 'do' && isConfigMode) {
+            const doMatch = commandToExecute.match(/^do\s+(.+)$/i);
+            if (doMatch) {
+                commandToExecute = doMatch[1];
+            }
+        }
+
+        const args = commandToExecute.split(/\s+/);
         const cmd = args[0].toLowerCase();
 
-        // 1. GLOBAL COMMANDS (Always available or mode transitions)
+
         if (cmd === 'exit') {
             if (this.mode === 'INTERFACE_CONFIG' || this.mode === 'OSPF_CONFIG' || this.mode === 'DHCP_CONFIG' || this.mode === 'ACL_CONFIG') {
                 this.mode = 'GLOBAL_CONFIG';
@@ -137,7 +149,7 @@ export class ShellSimulator {
                 this.mode = 'USER_EXEC';
                 return '';
             } else {
-                return 'exit'; // Will close connection in wrapping layer
+                return 'exit';
             }
         }
 
@@ -150,7 +162,7 @@ export class ShellSimulator {
             }
         }
 
-        // Mode Navigation
+
         if (cmd === 'enable') {
             if (this.mode === 'USER_EXEC') {
                 this.mode = 'PRIVILEGED_EXEC';
@@ -176,7 +188,7 @@ export class ShellSimulator {
             }
         }
 
-        // Terminal length/shell commands
+
         if (cmd === 'terminal' && args[1] === 'length' && args[2] === '0') {
             return '';
         }
@@ -195,7 +207,7 @@ export class ShellSimulator {
             return '';
         }
 
-        // 2. CONFIGURATION MODE COMMANDS
+
         if (this.mode === 'GLOBAL_CONFIG') {
             if (cmd === 'hostname' && args[1]) {
                 this.hostname = args[1];
@@ -207,7 +219,7 @@ export class ShellSimulator {
                 this.mode = 'INTERFACE_CONFIG';
                 this.activeInterface = ifaceName;
                 if (!this.interfaces.has(ifaceName)) {
-                    // Create loopback or custom interface dynamically
+
                     this.interfaces.set(ifaceName, {
                         name: ifaceName,
                         ip: null,
@@ -225,7 +237,7 @@ export class ShellSimulator {
                 if (!isNaN(vlanId)) {
                     this.vlans.add(vlanId);
                     this.activeVlan = vlanId;
-                    this.mode = 'GLOBAL_CONFIG'; // Cisco stays in config mode or enters vlan config, we keep it simple
+                    this.mode = 'GLOBAL_CONFIG';
                     return '';
                 }
             }
@@ -243,7 +255,7 @@ export class ShellSimulator {
                 const network = args[2];
                 const mask = args[3];
                 const next = args[4] || null;
-                // Add static route
+
                 this.routes.push({
                     network,
                     mask,
@@ -261,35 +273,39 @@ export class ShellSimulator {
                 return '';
             }
 
-            // OSPF Router mode
+
             if (cmd === 'router' && args[1] === 'ospf') {
                 this.mode = 'OSPF_CONFIG';
                 return '';
             }
 
-            // DHCP Pool mode
+            if (cmd === 'no' && args[1] === 'router' && args[2] === 'ospf') {
+                return '';
+            }
+
+
             if (cmd === 'ip' && args[1] === 'dhcp' && args[2] === 'pool' && args[3]) {
                 this.mode = 'DHCP_CONFIG';
                 return '';
             }
             if (cmd === 'ip' && args[1] === 'dhcp' && args[2] === 'excluded-address') {
-                return ''; // Exclude address success
+                return '';
             }
 
-            // ACL definition
+
             if (cmd === 'ip' && args[1] === 'access-list') {
                 this.mode = 'ACL_CONFIG';
                 return '';
             }
             if (cmd === 'access-list') {
-                return ''; // Standard ACL success
+                return '';
             }
 
-            // Unrecognized config command
+
             return `% Invalid input detected at '^' marker.`;
         }
 
-        // Interface config mode
+
         if (this.mode === 'INTERFACE_CONFIG' && this.activeInterface) {
             const iface = this.interfaces.get(this.activeInterface)!;
 
@@ -308,7 +324,7 @@ export class ShellSimulator {
             if (cmd === 'ip' && args[1] === 'address' && args[2] && args[3]) {
                 iface.ip = args[2];
                 iface.subnet = args[3];
-                // Check if connected route already exists, if not, add it
+
                 const network = this.calculateNetwork(args[2], args[3]);
                 this.routes = this.routes.filter(r => !(r.outgoingInterface === this.activeInterface && r.connected));
                 this.routes.push({
@@ -339,15 +355,22 @@ export class ShellSimulator {
             }
 
             if (cmd === 'ip' && args[1] === 'access-group') {
-                return ''; // Apply ACL success
+                return '';
             }
 
-            // Unrecognized interface config command
+            if (cmd === 'ip' && args[1] === 'ospf') {
+                return '';
+            }
+
+
             return `% Invalid input detected at '^' marker.`;
         }
 
         if (this.mode === 'OSPF_CONFIG') {
             if (cmd === 'network') {
+                return '';
+            }
+            if (cmd === 'passive-interface' || (cmd === 'no' && args[1] === 'passive-interface')) {
                 return '';
             }
             return `% Invalid input detected at '^' marker.`;
@@ -367,9 +390,9 @@ export class ShellSimulator {
             return `% Invalid input detected at '^' marker.`;
         }
 
-        // 3. EXEC / PRIVILEGED EXEC INSPECTION COMMANDS
-        // Note: Real IOS allows show commands in config mode if prefixed with "do show ...",
-        // but ciscollm-cli automatically ends config mode or sends do. If client sends raw show, we process it.
+
+
+
         const isShow = cmd === 'show' || cmd === 'sh' || (cmd === 'do' && (args[1]?.toLowerCase() === 'show' || args[1]?.toLowerCase() === 'sh'));
         if (isShow) {
             const showArgs = cmd === 'do' ? args.slice(2) : args.slice(1);
@@ -429,7 +452,7 @@ This product contains cryptographic features and is subject to Y...
             }
 
             if (showCmd === 'ip' && showArgs[1]?.startsWith('ro')) {
-                // Return simple route table
+
                 let out = `Codes: L - local, C - connected, S - static, R - RIP, M - mobile, B - BGP\n\n`;
                 out += `Gateway of last resort is not set\n\n`;
                 for (const r of this.routes) {
@@ -451,8 +474,8 @@ This product contains cryptographic features and is subject to Y...
             }
 
             if (showCmd === 'cdp' && showArgs[1]?.startsWith('ne')) {
-                // Return CDP neighbor that local topology discovery expects
-                // Switch2         Gig 0/1          120          S I     WS-C2960-   Gig 0/1
+
+
                 return `Capability Codes: R - Router, T - Trans Bridge, B - Source Route Bridge
                   S - Switch, H - Host, I - IGMP, r - Repeater, P - Phone
 
@@ -462,9 +485,9 @@ Switch2          Gig 0/1           125              S I   WS-C2960- Gig 0/1
             }
 
             if (showCmd === 'lldp' && showArgs[1]?.startsWith('ne')) {
-                // Return LLDP neighbor output matching local parsing:
-                // ^(\S+)\s+(\S+)\s+\d+\s+\S+\s+(\S+)$
-                // Switch2  Gi0/1  120  S  Gi0/1
+
+
+
                 return `Device ID           Local Intf         Hold-time  Capability      Port ID
 Switch2             Gi0/1              120        S               Gi0/1
 Total entries displayed: 1
@@ -474,7 +497,7 @@ Total entries displayed: 1
             return `% Unrecognized show command: show ${showArgs.join(' ')}`;
         }
 
-        // Save commands
+
         if (cmd === 'write' || cmd === 'wr') {
             return `Building configuration...\n[OK]`;
         }
@@ -483,7 +506,7 @@ Total entries displayed: 1
             return `Destination filename [startup-config]? \nBuilding configuration...\n[OK]`;
         }
 
-        // Diagnostics
+
         if (cmd === 'ping' && args[1]) {
             const ip = args[1];
             return `Sending 5, 100-byte ICMP Echos to ${ip}, timeout is 2 seconds:
@@ -492,12 +515,12 @@ Success rate is 100 percent (5/5), round-trip min/avg/max = 1/1/4 ms
 `;
         }
 
-        // Unrecognized CLI command in EXEC mode
+
         return `% Unrecognized command: ${trimmed}`;
     }
 
     private normalizeInterfaceName(name: string): string {
-        // Expand Gi0/1 -> GigabitEthernet0/1, Lo5 -> Loopback5 etc.
+
         const lower = name.toLowerCase();
         if (lower.startsWith('gi')) {
             return 'GigabitEthernet' + name.substring(2);

@@ -13,6 +13,13 @@ export interface ChatMessage {
     tool_calls?: ToolCall[];
     tool_call_id?: string;
     name?: string;
+    usage?: {
+        prompt_tokens: number;
+        completion_tokens: number;
+        total_tokens: number;
+        duration_ms: number;
+        tok_sec: number;
+    };
 }
 
 export interface ToolCall {

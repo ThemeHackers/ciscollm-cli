@@ -63,7 +63,7 @@ export class MultiAgentCoordinator {
                 parsed.forEach(link => nodeSet.add(link.remoteDeviceId));
                 links.push(...parsed);
             } catch {
-                // CDP may be disabled; try LLDP in the same iteration.
+
             }
 
             try {
@@ -72,7 +72,7 @@ export class MultiAgentCoordinator {
                 parsed.forEach(link => nodeSet.add(link.remoteDeviceId));
                 links.push(...parsed);
             } catch {
-                // LLDP may be unavailable on some platforms.
+
             }
         }
 
