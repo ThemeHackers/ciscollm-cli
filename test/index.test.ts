@@ -277,10 +277,113 @@ agentLoopForStats.run('Simple mock goal').then(() => {
 
 
 console.log('\n[Test 12]: Evaluating PlinkSerialSession listAvailableComPorts...');
-PlinkSerialSession.listAvailableComPorts().then((ports) => {
+PlinkSerialSession.listAvailableComPorts().then(async (ports) => {
     assert.ok(Array.isArray(ports), 'COM ports query should return an array');
     console.log(` -> PlinkSerialSession COM ports query passed. Detected: ${ports.join(', ')}`);
-    console.log('\nAll Unit Tests Finished Successfully!');
+
+    try {
+        console.log('\n[Test 15]: Evaluating Alternating Sequence Loop Detection in AgentLoop...');
+        const mockCallA = {
+            id: 'call-a',
+            type: 'function' as const,
+            function: {
+                name: 'execute_ios_command',
+                arguments: JSON.stringify({ command: 'show ip route', device: 'iosv-0' })
+            }
+        };
+        const mockCallB = {
+            id: 'call-b',
+            type: 'function' as const,
+            function: {
+                name: 'execute_ios_command',
+                arguments: JSON.stringify({ command: 'show ip ospf neighbor', device: 'iosv-0' })
+            }
+        };
+        
+        const mockSessionInstance = {
+            getState: () => ({ currentMode: 'PRIVILEGED_EXEC', hostname: 'iosv-0', prompt: 'iosv-0#' }),
+            execute: async () => 'OK'
+        } as any;
+        const coordinatorForLoop = {
+            getSessions: () => new Map([['iosv-0', mockSessionInstance]]),
+            getSession: () => mockSessionInstance,
+            getTopology: () => ({ discoveredAt: new Date().toISOString(), nodes: [], links: [] }),
+            getAllStates: () => ({ 'iosv-0': mockSessionInstance.getState() })
+        } as any;
+        
+        const loopForSeq = new CiscoAgentLoop({} as any, coordinatorForLoop);
+        
+        await (loopForSeq as any).handleExecuteCommandCall(mockCallA);
+        await (loopForSeq as any).handleExecuteCommandCall(mockCallB);
+        await (loopForSeq as any).handleExecuteCommandCall(mockCallA);
+        await (loopForSeq as any).handleExecuteCommandCall(mockCallB);
+        await (loopForSeq as any).handleExecuteCommandCall(mockCallA);
+        
+        let messages = (loopForSeq as any).messages;
+        let loopBlock = messages.find((m: any) => m.role === 'tool' && m.content.includes('Loop check block'));
+        assert.strictEqual(loopBlock, undefined, 'Alternating 5 times should not block yet');
+        
+        await (loopForSeq as any).handleExecuteCommandCall(mockCallB);
+        messages = (loopForSeq as any).messages;
+        loopBlock = messages.find((m: any) => m.role === 'tool' && m.content.includes('Loop check block'));
+        assert.ok(loopBlock !== undefined, 'Alternating 6 times (3 complete repetitions) should trigger loop check block');
+        console.log(' -> Alternating Sequence Loop Detection test passed.');
+
+        console.log('\n[Test 16]: Evaluating ShellSimulator new features (OSPF, IP Routing, Flash/Backup)...');
+        const { ShellSimulator } = require('../server/shell-simulator');
+        const sim = new ShellSimulator();
+        
+        let routeOut = sim.execute('show ip route');
+        assert.ok(!routeOut.includes('% IP routing table is not enabled'), 'Routing should be enabled by default');
+        
+        sim.execute('configure terminal');
+        sim.execute('no ip routing');
+        sim.execute('end');
+        routeOut = sim.execute('show ip route');
+        assert.ok(routeOut.includes('% IP routing table is not enabled'), 'no ip routing should disable routing table show');
+        
+        sim.execute('configure terminal');
+        sim.execute('ip routing');
+        sim.execute('end');
+        
+        let ospfOut = sim.execute('show ip ospf neighbor');
+        assert.ok(ospfOut.includes('% OSPF is not enabled'), 'OSPF should not be enabled initially');
+        
+        sim.execute('configure terminal');
+        sim.execute('router ospf 10');
+        sim.execute('end');
+        
+        ospfOut = sim.execute('show ip ospf neighbor');
+        assert.ok(ospfOut.includes('Neighbor ID') && ospfOut.includes('2.2.2.2'), 'OSPF neighbor table should show after enabling OSPF');
+        
+        let dirOut = sim.execute('dir flash:');
+        assert.ok(!dirOut.includes('backup-agent.cfg'), 'backup-agent.cfg should not exist initially');
+        
+        let copyOut = sim.execute('copy running-config flash:backup-agent.cfg');
+        assert.ok(copyOut.includes('Destination filename'), 'Should prompt for destination filename');
+        
+        let confirmOut = sim.execute('');
+        assert.ok(confirmOut.includes('copied') || confirmOut.includes('OK'), 'Should complete copy operation');
+        
+        dirOut = sim.execute('dir flash:');
+        assert.ok(dirOut.includes('backup-agent.cfg'), 'backup-agent.cfg should exist after copy');
+        
+        sim.execute('configure terminal');
+        sim.execute('hostname NewHostname');
+        assert.strictEqual(sim.hostname, 'NewHostname');
+        sim.execute('end');
+        
+        let rollbackOut = sim.execute('configure replace flash:backup-agent.cfg force');
+        assert.ok(rollbackOut.includes('Rollback Done'), 'Should rollback configuration successfully');
+        assert.strictEqual(sim.hostname, 'Switch1', 'Hostname should revert to Switch1 after configuration replace');
+        
+        console.log(' -> ShellSimulator new features test passed.');
+
+        console.log('\nAll Unit Tests Finished Successfully!');
+    } catch (e: any) {
+        console.error('New features test FAILED:', e.stack || e.message);
+        process.exit(1);
+    }
 }).catch((err) => {
     console.error(' -> PlinkSerialSession COM ports query failed:', err);
     process.exit(1);

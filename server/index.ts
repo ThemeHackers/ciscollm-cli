@@ -9,6 +9,7 @@ const TELNET_PORT = 2323;
 const HTTP_PORT = 11434;
 
 const availableModels: string[] = [];
+let loadedModel: string | null = null;
 const jobs = new Map<string, { model: string; progress: number; status: string }>();
 
 function getTimestamp(): string {
@@ -68,6 +69,12 @@ function startHttpServer(port: number, logCb: (msg: string) => void, onBound: (a
         if (method === 'GET' && (url === '/api/v1/models' || url === '/v1/models' || url === '/api/tags')) {
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ models: availableModels }));
+            return;
+        }
+
+        if (method === 'GET' && url === '/api/v1/models/loaded') {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ model: loadedModel }));
             return;
         }
 
@@ -147,6 +154,7 @@ function startHttpServer(port: number, logCb: (msg: string) => void, onBound: (a
                         return;
                     }
                     logCb(`Loading model ${model} into memory`);
+                    loadedModel = model;
                     res.writeHead(200, { 'Content-Type': 'application/json' });
                     res.end(JSON.stringify({ status: 'success', message: `Model ${model} loaded successfully` }));
                 } catch (e: any) {

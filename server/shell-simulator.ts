@@ -70,6 +70,46 @@ export class ShellSimulator {
     public shellVariables: Record<string, string> = {};
     public shellFunctions: Record<string, string> = {};
 
+    public ospfEnabled: boolean = false;
+    public ospfProcessId: string | null = null;
+    public ipRoutingEnabled: boolean = true;
+    public flashFiles: Set<string> = new Set(['c2960-lanbasek9-mz.150-2.SE4.bin']);
+    private pendingCopyDest: string | null = null;
+    private backupState: {
+        hostname: string;
+        interfaces: Map<string, InterfaceState>;
+        routes: RouteState[];
+        vlans: Set<number>;
+        vlanNames: Map<number, string>;
+    } | null = null;
+
+    private saveBackupState(): void {
+        const interfacesCopy = new Map<string, InterfaceState>();
+        for (const [name, val] of this.interfaces.entries()) {
+            interfacesCopy.set(name, { ...val });
+        }
+        const routesCopy = this.routes.map(r => ({ ...r }));
+        const vlansCopy = new Set(this.vlans);
+        const vlanNamesCopy = new Map(this.vlanNames);
+
+        this.backupState = {
+            hostname: this.hostname,
+            interfaces: interfacesCopy,
+            routes: routesCopy,
+            vlans: vlansCopy,
+            vlanNames: vlanNamesCopy
+        };
+    }
+
+    private restoreBackupState(): void {
+        if (!this.backupState) return;
+        this.hostname = this.backupState.hostname;
+        this.interfaces = this.backupState.interfaces;
+        this.routes = this.backupState.routes;
+        this.vlans = this.backupState.vlans;
+        this.vlanNames = this.backupState.vlanNames;
+    }
+
     constructor(initialHostname?: string) {
         if (initialHostname) {
             this.hostname = initialHostname;
@@ -99,6 +139,15 @@ export class ShellSimulator {
 
     public execute(line: string): string {
         const trimmed = line.trim();
+
+        if (this.pendingCopyDest) {
+            const dest = trimmed || this.pendingCopyDest;
+            this.flashFiles.add(dest);
+            this.saveBackupState();
+            this.pendingCopyDest = null;
+            return `1542 bytes copied in 0.456 secs (3381 bytes/sec)\n[OK]`;
+        }
+
         if (!trimmed) return '';
 
 
@@ -274,12 +323,26 @@ export class ShellSimulator {
             }
 
 
+            if (cmd === 'ip' && args[1] === 'routing') {
+                this.ipRoutingEnabled = true;
+                return '';
+            }
+
+            if (cmd === 'no' && args[1] === 'ip' && args[2] === 'routing') {
+                this.ipRoutingEnabled = false;
+                return '';
+            }
+
             if (cmd === 'router' && args[1] === 'ospf') {
                 this.mode = 'OSPF_CONFIG';
+                this.ospfProcessId = args[2] || null;
+                this.ospfEnabled = true;
                 return '';
             }
 
             if (cmd === 'no' && args[1] === 'router' && args[2] === 'ospf') {
+                this.ospfEnabled = false;
+                this.ospfProcessId = null;
                 return '';
             }
 
@@ -367,7 +430,7 @@ export class ShellSimulator {
         }
 
         if (this.mode === 'OSPF_CONFIG') {
-            if (cmd === 'network') {
+            if (cmd === 'network' || cmd === 'router-id') {
                 return '';
             }
             if (cmd === 'passive-interface' || (cmd === 'no' && args[1] === 'passive-interface')) {
@@ -452,7 +515,9 @@ This product contains cryptographic features and is subject to Y...
             }
 
             if (showCmd === 'ip' && showArgs[1]?.startsWith('ro')) {
-
+                if (!this.ipRoutingEnabled) {
+                    return '% IP routing table is not enabled';
+                }
                 let out = `Codes: L - local, C - connected, S - static, R - RIP, M - mobile, B - BGP\n\n`;
                 out += `Gateway of last resort is not set\n\n`;
                 for (const r of this.routes) {
@@ -461,6 +526,32 @@ This product contains cryptographic features and is subject to Y...
                     out += `${code}        ${r.network}/${this.getPrefixLength(r.mask)} is ${target}\n`;
                 }
                 return out;
+            }
+
+            if (showCmd === 'ip' && showArgs[1] === 'ospf' && showArgs[2]?.startsWith('ne')) {
+                if (!this.ospfEnabled) {
+                    return '% OSPF is not enabled';
+                }
+                return `Neighbor ID     Pri   State           Dead Time   Address         Interface\n` +
+                       `2.2.2.2           1   FULL/DR         00:00:35    192.168.1.2     GigabitEthernet0/0\n`;
+            }
+
+            if (showCmd === 'ip' && showArgs[1] === 'ospf' && showArgs[2]?.startsWith('in')) {
+                if (!this.ospfEnabled) {
+                    return '% OSPF is not enabled';
+                }
+                return `GigabitEthernet0/0 is up, line protocol is up \n` +
+                       `  Internet Address 192.168.1.254/24, Area 0 \n` +
+                       `  Process ID ${this.ospfProcessId || '10'}, Router ID 192.168.1.254, Network Type BROADCAST, Cost: 1\n`;
+            }
+
+            if (showCmd === 'ip' && showArgs[1] === 'ospf' && !showArgs[2]) {
+                if (!this.ospfEnabled) {
+                    return '% OSPF is not enabled';
+                }
+                return ` Routing Process "ospf ${this.ospfProcessId || '10'}" with ID 192.168.1.254\n` +
+                       ` Supports only single TOS(TOS0) routes\n` +
+                       ` Supports opaque LSA\n`;
             }
 
             if (showCmd?.startsWith('vl') && (showArgs[1]?.startsWith('br') || !showArgs[1])) {
@@ -504,6 +595,40 @@ Total entries displayed: 1
 
         if (cmd === 'copy' && args[1]?.startsWith('run') && args[2]?.startsWith('sta')) {
             return `Destination filename [startup-config]? \nBuilding configuration...\n[OK]`;
+        }
+
+        if (cmd === 'copy' && args[1]?.startsWith('run') && args[2]?.startsWith('flash:')) {
+            const destFile = args[2].replace(/^flash:/i, '');
+            this.pendingCopyDest = destFile || 'backup-agent.cfg';
+            return `Destination filename [${this.pendingCopyDest}]? `;
+        }
+
+        if (cmd === 'dir' && args[1] === 'flash:') {
+            let out = `Directory of flash:/\n\n`;
+            let index = 1;
+            let totalBytesUsed = 0;
+            
+            out += `    ${index++}  -rw-     4414921  Mar 01 1993 00:02:18 +00:00  c2960-lanbasek9-mz.150-2.SE4.bin\n`;
+            totalBytesUsed += 4414921;
+
+            if (this.flashFiles.has('backup-agent.cfg')) {
+                out += `    ${index++}  -rw-        1542  May 31 2026 12:24:17 +00:00  backup-agent.cfg\n`;
+                totalBytesUsed += 1542;
+            }
+
+            const totalBytes = 32514048;
+            const freeBytes = totalBytes - totalBytesUsed;
+            out += `\n${totalBytes} bytes total (${freeBytes} bytes free)\n`;
+            return out;
+        }
+
+        if (cmd === 'configure' && args[1] === 'replace' && args[2]?.startsWith('flash:')) {
+            const file = args[2].replace(/^flash:/i, '');
+            if (!this.flashFiles.has(file)) {
+                return `% Error opening flash:${file} (No such file or directory)`;
+            }
+            this.restoreBackupState();
+            return `Total number of passes: 1\nRollback Done\n`;
         }
 
 

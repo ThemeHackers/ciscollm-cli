@@ -34,6 +34,7 @@ export class CiscoAgentLoop {
     private transactions: Map<string, TransactionManager> = new Map();
     private firewall = new CommandFirewall();
     private lastCommandPerDevice: Record<string, DeviceCommandHistory> = {};
+    private deviceCommandHistoryList: Record<string, string[]> = {};
     private commandHints = 'Reference status: not loaded.';
     private commandReferenceEngine = CommandReferenceEngine.getInstance();
     private strictReferenceMode = false;
@@ -392,6 +393,37 @@ export class CiscoAgentLoop {
         return '127.0.0.1';
     }
 
+    private detectCommandLoop(history: string[]): { detected: boolean; pattern?: string[] } {
+        const len = history.length;
+        if (len < 6) return { detected: false };
+
+        for (let L = 2; L <= 3; L++) {
+            const reps = 3;
+            const requiredLength = L * reps;
+            if (len < requiredLength) continue;
+
+            const pattern = history.slice(len - L);
+            let match = true;
+            for (let r = 1; r < reps; r++) {
+                const startIdx = len - L * (r + 1);
+                const chunk = history.slice(startIdx, startIdx + L);
+                for (let i = 0; i < L; i++) {
+                    if (chunk[i] !== pattern[i]) {
+                        match = false;
+                        break;
+                    }
+                }
+                if (!match) break;
+            }
+
+            if (match) {
+                return { detected: true, pattern };
+            }
+        }
+
+        return { detected: false };
+    }
+
     private buildStateInfoString(): string {
         const states = this.coordinator.getAllStates();
         let stateInfo = '';
@@ -518,6 +550,22 @@ export class CiscoAgentLoop {
             targetDeviceId = this.resolveTargetDevice(requestedDevice);
         } catch (err: any) {
             this.injectToolResponse(call.id, 'execute_ios_command', `Error: ${err.message}`);
+            return;
+        }
+
+        if (!this.deviceCommandHistoryList[targetDeviceId]) {
+            this.deviceCommandHistoryList[targetDeviceId] = [];
+        }
+        this.deviceCommandHistoryList[targetDeviceId].push(cleanCommand.toLowerCase());
+
+        const loopCheck = this.detectCommandLoop(this.deviceCommandHistoryList[targetDeviceId]);
+        if (loopCheck.detected) {
+            logger.error(`Loop detected on device ${targetDeviceId} with sequence: ${loopCheck.pattern?.join(', ')}`);
+            this.injectToolResponse(
+                call.id,
+                'execute_ios_command',
+                `CRITICAL ERROR: Loop check block. You are stuck in an execution loop repeating the sequence [${loopCheck.pattern?.join(', ')}]. Please change your strategy, verify your configuration commands, or check if a required process (like OSPF) needs to be enabled (via "router ospf <process-id>" in global configuration mode) before running these verification/inspection commands.`
+            );
             return;
         }
 
@@ -977,8 +1025,8 @@ export class CiscoAgentLoop {
         }
 
         const result: ChatMessage[] = [
-            this.messages[0], // System prompt
-            this.messages[1]  // User original goal
+            this.messages[0],
+            this.messages[1]  
         ];
 
         result.push({

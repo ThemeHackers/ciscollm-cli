@@ -476,6 +476,40 @@ export class LLMClient {
             const targetModel = this.modelName.toLowerCase();
             const isModelPresent = modelsList.some(m => m && m.toLowerCase() === targetModel);
 
+           
+            let isAlreadyLoaded = false;
+            try {
+                if (apiBase.includes('1234') || apiBase.includes('lmstudio')) {
+                    if (isModelPresent) {
+                        isAlreadyLoaded = true;
+                    }
+                } else if (apiBase.includes('11434') || apiBase.includes('ollama')) {
+                    const ollamaBase = apiBase.replace(/\/api\/v1$/, '').replace(/\/v1$/, '');
+                    const psRes = await axios.get(`${ollamaBase}/api/ps`, { timeout: 2000 });
+                    if (psRes.data && Array.isArray(psRes.data.models)) {
+                        const loadedModels = psRes.data.models.map((m: any) => m.name.toLowerCase());
+                        if (loadedModels.some((m: string) => m.includes(targetModel) || targetModel.includes(m))) {
+                            isAlreadyLoaded = true;
+                        }
+                    }
+                } else {
+                    const loadedRes = await axios.get(`${apiBase}/models/loaded`, { timeout: 2000 }).catch(() => null);
+                    if (loadedRes && loadedRes.data && loadedRes.data.model) {
+                        const activeModel = loadedRes.data.model.toLowerCase();
+                        if (activeModel === targetModel) {
+                            isAlreadyLoaded = true;
+                        }
+                    }
+                }
+            } catch (err) {
+
+            }
+
+            if (isAlreadyLoaded) {
+                onProgress(`Model "${this.modelName}" is already loaded. Skipping load.`);
+                return true;
+            }
+
             if (!isModelPresent) {
                 onProgress(`Model "${this.modelName}" not found. Triggering download...`);
                 const downloadUrl = `${apiBase}/models/download`;
