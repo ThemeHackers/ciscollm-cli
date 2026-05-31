@@ -162,6 +162,7 @@ export class CiscoAgentLoop {
             const border = chalk.blue('│');
             let wrapper: any = undefined;
 
+            let pendingAsterisk = false;
             const onChunk = (chunk: { content?: string; reasoning?: string }) => {
                 if (!hasStartedStreaming) {
                     hasStartedStreaming = true;
@@ -170,14 +171,34 @@ export class CiscoAgentLoop {
                     modelSpinner.stop();
                     logger.diamond(`Step ${executionDepth}/${MAX_STEPS} — Agent thought process:`);
                     const totalWidth = getTerminalWidth();
-                    const title = '┌─── 🤖 Agent Reasoning (Streaming) ';
+                    const title = '┌─── Agent Reasoning (Streaming) ';
                     const topBorder = chalk.blue(title + '─'.repeat(Math.max(0, totalWidth - title.length)));
                     console.log(topBorder);
                     process.stdout.write(`${border}  `);
                     wrapper = new StreamWordWrapper(totalWidth - 4);
                 }
 
-                const text = (chunk.reasoning || chunk.content || '').replace(/\r/g, '');
+                let text = (chunk.reasoning || chunk.content || '').replace(/\r/g, '');
+                if (pendingAsterisk) {
+                    text = '*' + text;
+                    pendingAsterisk = false;
+                }
+                if (text.endsWith('*')) {
+                    let count = 0;
+                    for (let idx = text.length - 1; idx >= 0; idx--) {
+                        if (text[idx] === '*') {
+                            count++;
+                        } else {
+                            break;
+                        }
+                    }
+                    if (count % 2 !== 0) {
+                        text = text.substring(0, text.length - 1);
+                        pendingAsterisk = true;
+                    }
+                }
+                text = text.replace(/\*\*/g, '');
+
                 if (text && wrapper) {
                     wrapper.write(text);
                 }
@@ -256,7 +277,8 @@ export class CiscoAgentLoop {
                     }
                 } else {
                     logger.heading('FINAL AGENT REASONING SUMMARY');
-                    console.log(chalk.green(response.reasoning_content || response.content || '(No final response content provided)'));
+                    const rawSummary = response.reasoning_content || response.content || '(No final response content provided)';
+                    console.log(chalk.green(rawSummary.replace(/\*\*/g, '')));
                     dynamicLoopActive = false;
                 }
             }

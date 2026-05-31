@@ -24,6 +24,7 @@
   "scripts": {
     "build": "tsc",
     "start": "ts-node src/index.ts",
+    "server": "ts-node server/index.ts",
     "test": "ts-node test/index.test.ts",
     "prepack": "npm run build"
   },

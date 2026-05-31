@@ -120,7 +120,7 @@ export class NetconfSession extends BaseSession {
       }
       settled = true;
       this.connected = true;
-      console.log(chalk.green(`✔ Exchanging capabilities (<hello> message) completed successfully.`));
+      console.log(chalk.green(`[+] Exchanging capabilities (<hello> message) completed successfully.`));
       resolveConnection();
     };
 
@@ -292,7 +292,7 @@ export class NetconfSession extends BaseSession {
       this.sshClient = null;
     }
 
-    console.log(chalk.green(`✔ NETCONF Session to ${this.host} cleanly closed.`));
+    console.log(chalk.green(`[+] NETCONF Session to ${this.host} cleanly closed.`));
   }
 
   private buildConnectOptions(): Record<string, any> {

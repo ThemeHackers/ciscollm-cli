@@ -127,12 +127,12 @@ export class StreamWordWrapper {
 }
 
 export const logger = {
-    info: (msg: string) => console.log(chalk.cyan('ℹ ') + msg),
-    success: (msg: string) => console.log(chalk.green('✔ ') + chalk.bold.green(msg)),
-    warn: (msg: string) => console.warn(chalk.yellow('⚠ ') + chalk.yellow(msg)),
-    error: (msg: string) => console.error(chalk.red('✖ ') + chalk.red.bold(msg)),
+    info: (msg: string) => console.log(chalk.cyan('[*] ') + msg),
+    success: (msg: string) => console.log(chalk.green('[+] ') + chalk.bold.green(msg)),
+    warn: (msg: string) => console.warn(chalk.yellow('[!] ') + chalk.yellow(msg)),
+    error: (msg: string) => console.error(chalk.red('[x] ') + chalk.red.bold(msg)),
     critical: (msg: string) => {
-        console.error('\n' + chalk.bgRed.black.bold(' ⚡ CRITICAL ERROR ') + ' ' + chalk.red.bold(msg) + '\n');
+        console.error('\n' + chalk.bgRed.black.bold(' !!! CRITICAL ERROR !!! ') + ' ' + chalk.red.bold(msg) + '\n');
     },
     heading: (msg: string) => {
         const line = '━'.repeat(msg.length + 6);
@@ -143,7 +143,7 @@ export const logger = {
     reasoning: (msg: string) => {
         const width = getTerminalWidth();
         const border = chalk.blue('│');
-        const title = '┌─── 🤖 Agent Reasoning Thought Process ';
+        const title = '┌─── Agent Reasoning Thought Process ';
         const topBorder = chalk.blue(title + '─'.repeat(Math.max(0, width - title.length)));
         const bottomBorder = chalk.blue('└' + '─'.repeat(Math.max(0, width - 1)));
 
@@ -179,7 +179,7 @@ export const logger = {
         console.log('\n' + chalk.gray.italic(`  Responding with ${model}`));
     },
     diamond: (msg: string) => {
-        console.log(chalk.bold.magenta('✦ ') + chalk.white(msg));
+        console.log(chalk.bold.magenta('>> ') + chalk.white(msg));
     },
     toolBox: (title: string, content: string, success: boolean = true) => {
         const width = getTerminalWidth();
@@ -188,7 +188,7 @@ export const logger = {
         const bottom = chalk.gray('└' + '─'.repeat(width - 2) + '┘');
         
         console.log(top);
-        const icon = success ? chalk.green('✓') : chalk.red('✖');
+        const icon = success ? chalk.green('[+]') : chalk.red('[x]');
         const maxWidth = width - 6;
         const wrappedTitleLines = wrapText(title, maxWidth);
         
@@ -221,9 +221,39 @@ export const logger = {
 };
 
 export function createSpinner(text: string): ora.Ora {
-    return ora({
+    const spinner = ora({
         text,
         color: 'cyan',
         spinner: 'dots'
     });
+
+    spinner.succeed = (newText?: string) => {
+        return spinner.stopAndPersist({
+            symbol: chalk.green('[+]'),
+            text: newText || spinner.text
+        });
+    };
+
+    spinner.fail = (newText?: string) => {
+        return spinner.stopAndPersist({
+            symbol: chalk.red('[x]'),
+            text: newText || spinner.text
+        });
+    };
+
+    spinner.warn = (newText?: string) => {
+        return spinner.stopAndPersist({
+            symbol: chalk.yellow('[!]'),
+            text: newText || spinner.text
+        });
+    };
+
+    spinner.info = (newText?: string) => {
+        return spinner.stopAndPersist({
+            symbol: chalk.cyan('[*]'),
+            text: newText || spinner.text
+        });
+    };
+
+    return spinner;
 }

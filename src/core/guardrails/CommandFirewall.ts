@@ -91,7 +91,7 @@ export class CommandFirewall {
     public async verifyWithHuman(command: string, reason: string): Promise<boolean> {
         const isNonInteractive = process.env.CISCOLLM_NON_INTERACTIVE === 'true';
         if (isNonInteractive) {
-            console.warn('\n' + chalk.bold.red(`⚠️  [GUARDRAIL BLOCK]: Non-interactive mode active. Automatically rejecting high-risk command: "${command}"`));
+            console.warn('\n' + chalk.bold.red(`[GUARDRAIL BLOCK]: Non-interactive mode active. Automatically rejecting high-risk command: "${command}"`));
             console.warn(`- Protection Rule Match:      ${chalk.cyan(reason)}\n`);
             return false;
         }
@@ -99,7 +99,7 @@ export class CommandFirewall {
         const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
         
         return new Promise((resolve) => {
-            console.warn('\n' + chalk.bold.red('⚠️  [GUARDRAIL WARNING]: High-Risk Command Blocked'));
+            console.warn('\n' + chalk.bold.red('[GUARDRAIL WARNING]: High-Risk Command Blocked'));
             console.warn(chalk.bold.red('============================================================'));
             console.warn(`- The Agent requested to run: ${chalk.bold.yellow(`"${command}"`)}`);
             console.warn(`- Protection Rule Match:      ${chalk.cyan(reason)}`);

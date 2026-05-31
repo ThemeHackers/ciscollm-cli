@@ -20,7 +20,7 @@ export class MultiAgentCoordinator {
         const promises = Array.from(this.sessions.entries()).map(async ([id, session]) => {
             try {
                 await session.connect();
-                console.log(chalk.green(`✔ Device "${id}" connected successfully.`));
+                console.log(chalk.green(`[+] Device "${id}" connected successfully.`));
             } catch (err: any) {
                 throw new Error(`Device "${id}" failed to connect: ${err.message}`);
             }
@@ -114,9 +114,9 @@ export class MultiAgentCoordinator {
         for (const [id, session] of this.sessions.entries()) {
             try {
                 await session.disconnect();
-                console.log(chalk.green(`✔ Device "${id}" disconnected cleanly.`));
+                console.log(chalk.green(`[+] Device "${id}" disconnected cleanly.`));
             } catch (err: any) {
-                console.warn(chalk.yellow(`⚠ Device "${id}" failed to close cleanly: ${err.message}`));
+                console.warn(chalk.yellow(`[!] Device "${id}" failed to close cleanly: ${err.message}`));
             }
         }
         this.sessions.clear();

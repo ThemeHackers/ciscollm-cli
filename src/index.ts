@@ -803,7 +803,14 @@ program
             const llmSpinner = createSpinner('Preflight check: validating LLM endpoint reachability...').start();
             try {
                 await localAIClient.ensureReachable();
-                llmSpinner.succeed('LLM endpoint is reachable.');
+                const setupOk = await localAIClient.setupModelIfNeeded(status => {
+                    llmSpinner.text = `LLM preflight: ${status}`;
+                });
+                if (setupOk) {
+                    llmSpinner.succeed('LLM endpoint is reachable and model is ready.');
+                } else {
+                    llmSpinner.warn('LLM endpoint is reachable (model auto-load skipped/not supported by this provider).');
+                }
             } catch (err: any) {
                 llmSpinner.fail('LLM endpoint preflight failed.');
                 throw err;

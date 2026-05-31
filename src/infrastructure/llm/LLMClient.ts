@@ -62,10 +62,24 @@ export class LLMClient {
             }
         } catch (error: any) {
             let details = error.message;
-            if (error.response && error.response.data) {
-                details = typeof error.response.data === 'string' 
-                    ? error.response.data 
-                    : JSON.stringify(error.response.data);
+            if (error.response) {
+                const status = error.response.status;
+                const statusText = error.response.statusText || '';
+                let bodyDetails = '';
+                if (error.response.data) {
+                    if (typeof error.response.data === 'string') {
+                        bodyDetails = error.response.data;
+                    } else if (error.response.data.constructor && error.response.data.constructor.name === 'IncomingMessage') {
+                        bodyDetails = `[Stream Response]`;
+                    } else {
+                        try {
+                            bodyDetails = JSON.stringify(error.response.data);
+                        } catch {
+                            bodyDetails = `[Unserializable Response Data]`;
+                        }
+                    }
+                }
+                details = `HTTP ${status} ${statusText}${bodyDetails ? ` - ${bodyDetails}` : ''} (original error: ${error.message})`;
             }
             throw new Error(`LLM Client Error [${this.provider}]: ${details}`);
         }
@@ -345,5 +359,79 @@ export class LLMClient {
             `LLM endpoint preflight failed for [${this.provider}] at "${this.endpoint}". ` +
             `Probes: ${errors.join(' | ')}. ${guidance}`
         );
+    }
+
+    private getApiV1BaseUrl(): string {
+        const base = this.endpoint.replace(/\/$/, '');
+        if (base.endsWith('/v1')) {
+            return `${base.substring(0, base.length - 3)}/api/v1`;
+        }
+        return `${base}/api/v1`;
+    }
+
+    public async setupModelIfNeeded(onProgress: (status: string) => void): Promise<boolean> {
+        if (this.provider === 'cloud') {
+            return false;
+        }
+
+        try {
+            const apiBase = this.getApiV1BaseUrl();
+            const modelsUrl = `${apiBase}/models`;
+            
+            onProgress('Checking available models...');
+            const response = await axios.get(modelsUrl, { timeout: 3500 });
+            const data = response.data;
+            
+            let modelsList: string[] = [];
+            if (Array.isArray(data)) {
+                modelsList = data.map((m: any) => typeof m === 'string' ? m : m.key || m.id || m.name).filter(Boolean);
+            } else if (data && Array.isArray(data.models)) {
+                modelsList = data.models.map((m: any) => typeof m === 'string' ? m : m.key || m.id || m.name).filter(Boolean);
+            } else if (data && Array.isArray(data.data)) {
+                modelsList = data.data.map((m: any) => typeof m === 'string' ? m : m.key || m.id || m.name).filter(Boolean);
+            }
+
+            const targetModel = this.modelName.toLowerCase();
+            const isModelPresent = modelsList.some(m => m && m.toLowerCase() === targetModel);
+
+            if (!isModelPresent) {
+                onProgress(`Model "${this.modelName}" not found. Triggering download...`);
+                const downloadUrl = `${apiBase}/models/download`;
+                const downloadRes = await axios.post(downloadUrl, { model: this.modelName }, { timeout: 5000 });
+                
+                if (downloadRes.data?.status === 'already_downloaded') {
+                    onProgress(`Model "${this.modelName}" is already downloaded.`);
+                } else {
+                    const jobId = downloadRes.data?.job_id;
+                    if (!jobId) {
+                        throw new Error('No job_id returned from download endpoint.');
+                    }
+
+                    let completed = false;
+                    const statusUrl = `${apiBase}/models/download/status/${jobId}`;
+                    while (!completed) {
+                        await new Promise(resolve => setTimeout(resolve, 2000));
+                        const statusRes = await axios.get(statusUrl, { timeout: 3500 });
+                        const status = statusRes.data?.status;
+                        const progress = statusRes.data?.progress || '0%';
+                        onProgress(`Downloading "${this.modelName}": ${progress}`);
+                        if (status === 'completed' || status === 'success') {
+                            completed = true;
+                        } else if (status === 'failed' || status === 'error') {
+                            throw new Error(`Download job ${jobId} failed.`);
+                        }
+                    }
+                }
+            }
+
+            onProgress(`Loading model "${this.modelName}"...`);
+            const loadUrl = `${apiBase}/models/load`;
+            await axios.post(loadUrl, { model: this.modelName }, { timeout: 120000 });
+            onProgress(`Model "${this.modelName}" loaded.`);
+            return true;
+        } catch (err: any) {
+            onProgress(`Skipping auto-load (graceful fallback): ${err.message}`);
+            return false;
+        }
     }
 }

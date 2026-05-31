@@ -96,7 +96,7 @@ export class CmlSession extends BaseSession {
             password: this.password || ''
         });
         this.token = typeof raw === 'string' ? raw : (raw as any).token || String(raw);
-        console.log(chalk.green(`✔ Authenticated as ${chalk.bold(this.username || 'admin')}`));
+        console.log(chalk.green(`[+] Authenticated as ${chalk.bold(this.username || 'admin')}`));
 
         console.log(chalk.cyan(`❯ Scanning CML for running labs and nodes...`));
         const labIds = await this.request<string[]>('GET', '/labs');
@@ -109,14 +109,14 @@ export class CmlSession extends BaseSession {
             this.state.hostname = runningNode.label;
             this.state.prompt = `${runningNode.label}#`;
             console.log(chalk.green(
-                `✔ Found running node: ${chalk.bold(runningNode.label)} ` +
+                `[+] Found running node: ${chalk.bold(runningNode.label)} ` +
                 `[${runningNode.nodeDefinition}] in lab "${runningNode.labTitle}"`
             ));
             if (runningNode.mgmtIp) {
                 try {
                     await this.openSsh(runningNode.mgmtIp, runningNode.mgmtPort || 22);
                     console.log(chalk.green(
-                        `✔ SSH reachable at ${runningNode.label} (${runningNode.mgmtIp})`
+                        `[+] SSH reachable at ${runningNode.label} (${runningNode.mgmtIp})`
                     ));
                 } catch {
                     this.sshStream = null;
@@ -158,7 +158,7 @@ export class CmlSession extends BaseSession {
         await this.request('PUT', `/labs/${this.activeLabId}/start`);
 
         const node = await this.waitForNodeBoot(this.activeLabId, nodeId, chosenDef);
-        console.log(chalk.green(`✔ Node ${chalk.bold(node.label)} is ${chalk.bold(node.state)} and ready.`));
+        console.log(chalk.green(`[+] Node ${chalk.bold(node.label)} is ${chalk.bold(node.state)} and ready.`));
         return node;
     }
 
@@ -451,9 +451,9 @@ export class CmlSession extends BaseSession {
             try {
                 console.log(chalk.cyan(`❯ Deleting sandbox lab ${this.activeLabId}...`));
                 await this.request('DELETE', `/labs/${this.activeLabId}`);
-                console.log(chalk.green(`✔ Sandbox lab deleted cleanly.`));
+                console.log(chalk.green(`[+] Sandbox lab deleted cleanly.`));
             } catch (e: any) {
-                console.warn(chalk.yellow(`⚠ Could not delete lab: ${e.message}`));
+                console.warn(chalk.yellow(`[!] Could not delete lab: ${e.message}`));
             }
         } else if (this.activeLabId && !this.ownedLab) {
             console.log(chalk.dim(
@@ -465,7 +465,7 @@ export class CmlSession extends BaseSession {
         if (this.token) {
             try {
                 await this.request('DELETE', '/logout');
-                console.log(chalk.green(`✔ Logged out from CML successfully.`));
+                console.log(chalk.green(`[+] Logged out from CML successfully.`));
             } catch {}
             this.token = null;
         }

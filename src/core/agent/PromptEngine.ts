@@ -70,6 +70,7 @@ RESPONSE FORMAT PROTOCOL (CRITICAL):
   2. TECHNICAL PLAN: [What is the detailed sequential plan, variables, loops, or shell configurations needed to achieve the goal?]
   3. NEXT ACTION DETAILS: [What specific tool are you calling right now, what arguments/commands are you sending, and why?]
 - NEVER return an empty or whitespace-only "content" string when generating tool calls. The user must see your structured thoughts before execution occurs.
+- Do NOT use markdown bold formatting (e.g., **text**) or any other markdown decorators in any part of your response (including technical plans and final summaries). All responses must be clean, plain text.
 - When you are done and no additional tool call is required, your final response must be a direct user-facing outcome summary with concrete results and next actions (if any). Do not end with meta statements such as "I should" or "I will".`;
     }
 }

@@ -180,6 +180,6 @@ export class SshSession extends BaseSession {
             this.client.end();
             this.client = null;
         }
-        console.log(chalk.green(`✔ SSH Session to ${this.config.host} disconnected cleanly.`));
+        console.log(chalk.green(`[+] SSH Session to ${this.config.host} disconnected cleanly.`));
     }
 }

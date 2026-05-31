@@ -21,7 +21,7 @@ export class TransactionManager {
             console.log(chalk.cyan('❯ Checking flash storage reachability...'));
             const flashCheck = await session.execute('dir flash:');
             if (flashCheck.includes('% Invalid') || flashCheck.includes('No such file') || flashCheck.includes('Error')) {
-                console.warn(chalk.yellow('⚠ Flash storage is not accessible or not found. Skipping backup creation.'));
+                console.warn(chalk.yellow('[!] Flash storage is not accessible or not found. Skipping backup creation.'));
                 return;
             }
 
@@ -32,18 +32,18 @@ export class TransactionManager {
                 const confirmOutput = await session.execute('');
                 if (confirmOutput.includes('copied') || confirmOutput.includes('OK')) {
                     this.backupCreated = true;
-                    console.log(chalk.green('✔ Running configuration backup successfully created.'));
+                    console.log(chalk.green('[+] Running configuration backup successfully created.'));
                 } else {
-                    console.warn(chalk.yellow('⚠ Backup confirmation response did not confirm copy completion.'));
+                    console.warn(chalk.yellow('[!] Backup confirmation response did not confirm copy completion.'));
                 }
             } else if (rawOutput.includes('copied') || rawOutput.includes('OK')) {
                 this.backupCreated = true;
-                console.log(chalk.green('✔ Running configuration backup successfully created.'));
+                console.log(chalk.green('[+] Running configuration backup successfully created.'));
             } else {
-                console.warn(chalk.yellow('⚠ Failed to backup running-config. Flash may be missing or read-only.'));
+                console.warn(chalk.yellow('[!] Failed to backup running-config. Flash may be missing or read-only.'));
             }
         } catch (err: any) {
-            console.warn(chalk.yellow(`⚠ Backup creation skipped/failed: ${err.message}`));
+            console.warn(chalk.yellow(`[!] Backup creation skipped/failed: ${err.message}`));
         }
     }
 
@@ -133,7 +133,7 @@ export class TransactionManager {
     }
 
     public async executeRollback(session: BaseSession, failedCommand?: string): Promise<string> {
-        console.warn(chalk.red('⚠ Safety rollback triggered!'));
+        console.warn(chalk.red('[!] Safety rollback triggered!'));
 
         // Capture the state before rollback
         const stateBeforeRollback = session.getState();
@@ -180,11 +180,11 @@ export class TransactionManager {
         let rollbackResult = '';
 
         if (snapshotCapableSession.restoreBackupSnapshot?.()) {
-            console.log(chalk.green('✔ Mock backup restore completed successfully.'));
+            console.log(chalk.green('[+] Mock backup restore completed successfully.'));
             rollbackResult = 'Mock backup restore completed successfully.';
             this.clear();
         } else if (snapshotCapableSession.hasSnapshots?.() && snapshotCapableSession.restoreToInitialSnapshot?.()) {
-            console.log(chalk.green('✔ Mock snapshot restore completed successfully.'));
+            console.log(chalk.green('[+] Mock snapshot restore completed successfully.'));
             rollbackResult = 'Mock snapshot restore completed successfully.';
             this.clear();
         } else {
@@ -201,14 +201,14 @@ export class TransactionManager {
                     
                     const restoreOutput = await session.execute(`configure replace ${this.backupFilename} force`);
                     if (!restoreOutput.includes('% Invalid') && !restoreOutput.includes('Unrecognized')) {
-                        console.log(chalk.green('✔ Atomic restore completed successfully.'));
+                        console.log(chalk.green('[+] Atomic restore completed successfully.'));
                         rollbackResult = restoreOutput;
                         this.clear();
                     } else {
-                        console.warn(chalk.yellow('⚠ configure replace failed/unsupported. Falling back to command inversion.'));
+                        console.warn(chalk.yellow('[!] configure replace failed/unsupported. Falling back to command inversion.'));
                     }
                 } catch (err: any) {
-                    console.warn(chalk.yellow(`⚠ Atomic replace failed: ${err.message}. Falling back to command inversion.`));
+                    console.warn(chalk.yellow(`[!] Atomic replace failed: ${err.message}. Falling back to command inversion.`));
                 }
             }
 

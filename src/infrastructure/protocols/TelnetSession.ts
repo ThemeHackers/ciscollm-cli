@@ -26,7 +26,7 @@ export class TelnetSession extends BaseSession {
             console.log(chalk.cyan(`❯ Connecting to telnet host ${this.config.host}:${port}...`));
             
             this.socket = net.createConnection({ host: this.config.host, port }, () => {
-                console.log(chalk.green(`✔ TCP socket connection established.`));
+                console.log(chalk.green(`[+] TCP socket connection established.`));
             });
 
             this.socket.on('data', (data: Buffer) => this.handleRawData(data));
@@ -55,7 +55,7 @@ export class TelnetSession extends BaseSession {
                     clearTimeout(connectTimeout);
                     this.eventEmitter.removeListener('stream_updated', checkState);
                     this.updateStateFromPrompt(match[1]);
-                    console.log(chalk.green(`✔ Logged in successfully. Syncing terminal settings...`));
+                    console.log(chalk.green(`[+] Logged in successfully. Syncing terminal settings...`));
                     
                     const paginationCommands = [
                         'terminal length 0',
@@ -200,6 +200,6 @@ export class TelnetSession extends BaseSession {
             this.socket.destroy();
             this.socket = null;
         }
-        console.log(chalk.green(`✔ Telnet Session to ${this.config.host} disconnected cleanly.`));
+        console.log(chalk.green(`[+] Telnet Session to ${this.config.host} disconnected cleanly.`));
     }
 }

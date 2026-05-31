@@ -106,12 +106,12 @@ export class PlinkSerialSession extends BaseSession {
             };
 
             this.process.stdin.on('error', (err) => {
-                console.error(chalk.red(`⚠ Stdin Error: ${err.message}`));
+                console.error(chalk.red(`[!] Stdin Error: ${err.message}`));
             });
 
             this.process.stdout.on('data', (data: Buffer) => this.handleData(data));
             this.process.stderr.on('data', (data: Buffer) => {
-                console.error(chalk.red(`⚠ Stderr: ${data.toString()}`));
+                console.error(chalk.red(`[!] Stderr: ${data.toString()}`));
             });
 
             this.process.on('error', async (err) => {
