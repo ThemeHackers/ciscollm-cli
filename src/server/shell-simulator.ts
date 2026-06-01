@@ -1,4 +1,4 @@
-import { PROMPT_REGEX } from '../src/shared/constants';
+import { PROMPT_REGEX } from '../shared/constants';
 
 export type CliMode = 'USER_EXEC' | 'PRIVILEGED_EXEC' | 'GLOBAL_CONFIG' | 'INTERFACE_CONFIG' | 'OSPF_CONFIG' | 'DHCP_CONFIG' | 'ACL_CONFIG';
 

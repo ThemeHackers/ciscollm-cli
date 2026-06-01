@@ -238,32 +238,38 @@ function startHttpServer(port: number, logCb: (msg: string) => void, onBound: (a
 }
 
 
-let httpServer: http.Server | null = null;
-try {
-    const sshServer = startSshServer(SSH_PORT, (msg) => {
-        log(`${chalk.bold.blue('[SSH]')} ${msg}`);
-    });
+export function startSimulator(options: { sshPort: number; telnetPort: number; httpPort: number }) {
+    let httpServer: http.Server | null = null;
+    try {
+        const sshServer = startSshServer(options.sshPort, (msg) => {
+            log(`${chalk.bold.blue('[SSH]')} ${msg}`);
+        });
 
-    const telnetServer = startTelnetServer(TELNET_PORT, (msg) => {
-        log(`${chalk.bold.yellow('[Telnet]')} ${msg}`);
-    });
+        const telnetServer = startTelnetServer(options.telnetPort, (msg) => {
+            log(`${chalk.bold.yellow('[Telnet]')} ${msg}`);
+        });
 
-    httpServer = startHttpServer(HTTP_PORT, (msg) => {
-        log(msg);
-    }, (actualPort) => {
-        printDashboard(actualPort);
-        log(`${chalk.bold.green('[HTTP]')} HTTP Server listening on port ${actualPort}`);
-        log(`${chalk.bold.blue('[SSH]')} SSH & NETCONF Server listening on port ${SSH_PORT}`);
-        log(`${chalk.bold.yellow('[Telnet]')} Telnet Server listening on port ${TELNET_PORT}`);
-    });
+        httpServer = startHttpServer(options.httpPort, (msg) => {
+            log(msg);
+        }, (actualPort) => {
+            printDashboard(actualPort);
+            log(`${chalk.bold.green('[HTTP]')} HTTP Server listening on port ${actualPort}`);
+            log(`${chalk.bold.blue('[SSH]')} SSH & NETCONF Server listening on port ${options.sshPort}`);
+            log(`${chalk.bold.yellow('[Telnet]')} Telnet Server listening on port ${options.telnetPort}`);
+        });
 
-    process.on('SIGINT', () => {
-        log(chalk.red('Shutting down simulator servers...'));
-        sshServer.close();
-        telnetServer.close();
-        if (httpServer) httpServer.close();
-        process.exit(0);
-    });
-} catch (e: any) {
-    console.error(chalk.red(`Failed to start simulator: ${e.message}`));
+        process.on('SIGINT', () => {
+            log(chalk.red('Shutting down simulator servers...'));
+            sshServer.close();
+            telnetServer.close();
+            if (httpServer) httpServer.close();
+            process.exit(0);
+        });
+    } catch (e: any) {
+        console.error(chalk.red(`Failed to start simulator: ${e.message}`));
+    }
+}
+
+if (require.main === module) {
+    startSimulator({ sshPort: SSH_PORT, telnetPort: TELNET_PORT, httpPort: HTTP_PORT });
 }

@@ -13,6 +13,7 @@ import { NetconfSession } from './infrastructure/protocols/NetconfSession';
 import { CmlSession } from './infrastructure/protocols/CmlSession';
 import { logger, createSpinner } from './cli/ui/ui';
 import { readFileSync } from 'fs';
+import { startSimulator } from './server';
 
 const program = new Command();
 let activeCoordinator: MultiAgentCoordinator | null = null;
@@ -839,6 +840,19 @@ program
             logger.info('Session Terminated. Pipelines detached.');
             process.exit(0);
         }
+    });
+
+program
+    .command('server')
+    .description('Start the Cisco IOS Multi-Protocol Test Simulator (SSH, Telnet, NETCONF, and HTTP LLM Mock)')
+    .option('--ssh-port <port>', 'Port for the mock SSH & NETCONF server', '2222')
+    .option('--telnet-port <port>', 'Port for the mock Telnet server', '2323')
+    .option('--http-port <port>', 'Port for the mock HTTP LLM server', '11434')
+    .action((options) => {
+        const sshPort = parseInt(options.sshPort, 10);
+        const telnetPort = parseInt(options.telnetPort, 10);
+        const httpPort = parseInt(options.httpPort, 10);
+        startSimulator({ sshPort, telnetPort, httpPort });
     });
 
 program.parse(process.argv);
