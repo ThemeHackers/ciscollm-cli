@@ -1,4 +1,5 @@
 import { NetworkTopology } from '../../shared/types';
+import { normalizeInterfaceName } from '../../shared/utils';
 
 export interface ValidationResult {
     safe: boolean;
@@ -35,10 +36,10 @@ export class PreExecutionValidator {
         }
 
         const interfaceMatch = /^interface\s+([A-Za-z0-9\/\.\-]+)/i.exec(command.trim());
-        let targetedInterface = interfaceMatch ? interfaceMatch[1].toLowerCase().trim() : null;
+        let targetedInterface = interfaceMatch ? normalizeInterfaceName(interfaceMatch[1]) : null;
         
         if (currentInterfaceContext && !targetedInterface) {
-            targetedInterface = currentInterfaceContext.toLowerCase().trim();
+            targetedInterface = normalizeInterfaceName(currentInterfaceContext);
         }
 
         if (targetedInterface && normalized.includes('shutdown')) {

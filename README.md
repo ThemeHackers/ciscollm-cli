@@ -85,6 +85,24 @@ Extends sandbox capabilities beyond local mock devices:
 * **NETCONF XML Sessions:** Supports programmatic configuration using structured XML RPC calls and YANG schemas.
 * **NETCONF SSH Auth:** Supports username/password, SSH private key, passphrase, and NETCONF timeout tuning for real devices.
 
+### 13. 🐚 Interactive Mock Shell Simulator
+Directly access a simulated stateful Cisco IOS shell on the terminal using `ciscollm shell`. Ideal for testing config commands, interface setups, routing tables, and VLANs interactively without a live device connection.
+
+### 14. 📊 Live Visual Control Dashboard
+Start a native, zero-dependency visual server starting on port `3000` (or custom `--dashboard-port`) using `ciscollm dashboard` or automatically during agent runs. It offers an interactive SPA showing:
+* **Interactive Swarm Topology Map:** Visualized dynamically using Vis.js.
+* **Real-time Agent Action Logs:** Monitor command firewalls, thoughts, and rule violations.
+* **Dynamic Configuration Diffs:** Detailed green/red difference reports of all configuration modifications.
+* **Emergency Rollback:** An instant, manual trigger to restore configuration states across all synchronized devices.
+* **Mobile/Responsive Layout:** Clean HSL-curated dark slate glassmorphism designed to fit desktop, tablet, and mobile views.
+
+### 15. 🛡️ Network Pre & Post-Flight Audits
+Executes automated preflight and postflight network safety scans:
+* **Gateway Reachability:** Verifies default gateway ping connectivity.
+* **Interface Administrative Status:** Inspects status and alerts if protected links go down.
+* **OSPF neighbor counts and route tallies:** Automatically audits the number of active routing peers and OSPF-learned paths.
+* Displays a clean, tabular side-by-side audit report directly in the console terminal upon completing any run.
+
 ---
 
 ## 📦 Installation
@@ -101,11 +119,14 @@ Once installed, the global executable `ciscollm` becomes available.
 
 ## 🛠️ CLI Usage & Options
 
+You can invoke `ciscollm` using one of the following subcommands:
+
+### 1. `ciscollm run`
+Execute network configuration or optimization tasks on target Cisco hardware.
+
 ```bash
 ciscollm run [options]
 ```
-
-### Options Table
 
 | Option / Flag | Alias | Description | Default Value |
 |---|---|---|---|
@@ -133,6 +154,38 @@ ciscollm run [options]
 | `--no-ref-telemetry` | - | Disable command-reference warmup telemetry logs. | `false` |
 | `--non-interactive` | - | Run without interactive prompts (auto-rejects dangerous commands). | `false` |
 | `--rbac-role <role>` | - | Specify the Active Agent RBAC authorization role (`admin`, `read_only`). | `admin` |
+| `--dashboard-port <port>` | - | Port to host the live Visual Control Dashboard server. | `3000` |
+
+### 2. `ciscollm server`
+Start the Cisco IOS Multi-Protocol Test Simulator (SSH, Telnet, NETCONF, and HTTP LLM Mock).
+
+```bash
+ciscollm server [options]
+```
+
+| Option / Flag | Description | Default Value |
+|---|---|---|
+| `--ssh-port <port>` | Port for the mock SSH & NETCONF server | `2222` |
+| `--telnet-port <port>` | Port for the mock Telnet server | `2323` |
+| `--http-port <port>` | Port for the mock HTTP LLM server | `11434` |
+
+### 3. `ciscollm shell`
+Launch the interactive stateful Cisco IOS mock shell simulator directly.
+
+```bash
+ciscollm shell
+```
+
+### 4. `ciscollm dashboard`
+Start the visual control dashboard server standalone to inspect historical records and active topology.
+
+```bash
+ciscollm dashboard [options]
+```
+
+| Option / Flag | Description | Default Value |
+|---|---|---|
+| `--port <port>` | Port for the dashboard server | `3000` |
 
 ---
 
@@ -173,6 +226,24 @@ ciscollm run --protocol netconf --host 192.168.1.188 --port 830 --username admin
 ```bash
 $env:CISCOLLM_PASS = '!@admin1234'
 ciscollm run --protocol netconf --host 192.168.1.188 --username admin --env-password --goal "Show interface brief"
+```
+
+### 8. Starting the Multi-Protocol Test Simulator
+Start the simulator server which handles SSH/Telnet connections and hosts a mock LLM endpoint:
+```bash
+ciscollm server --ssh-port 2222 --telnet-port 2323 --http-port 11434
+```
+
+### 9. Launching the Stateful Interactive Shell
+Directly test and play with IOS commands:
+```bash
+ciscollm shell
+```
+
+### 10. Running the Dashboard Standalone
+Inspect previous change runs, active state differences, or network topologies:
+```bash
+ciscollm dashboard --port 3000
 ```
 
 ---

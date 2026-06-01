@@ -21,7 +21,7 @@ export interface RouteState {
 
 export class ShellSimulator {
     public hostname: string = 'Switch1';
-    public mode: CliMode = 'PRIVILEGED_EXEC';
+    public mode: CliMode = 'USER_EXEC';
     public activeInterface: string | null = null;
     
     public interfaces: Map<string, InterfaceState> = new Map([
@@ -183,6 +183,63 @@ export class ShellSimulator {
 
         const args = commandToExecute.split(/\s+/);
         const cmd = args[0].toLowerCase();
+
+        if (cmd === '?' || cmd === 'help') {
+            if (cmd === 'help') {
+                return `Help may be requested at any point in a command by entering
+a question mark '?'. If nothing matches, the help list will
+show the available options.`;
+            }
+            if (this.mode === 'USER_EXEC') {
+                return `Exec commands:
+  disable            Turn off privileged commands
+  enable             Turn on privileged commands
+  exit               Exit from the EXEC
+  ping               Send echo messages
+  show               Show running system information`;
+            } else if (this.mode === 'PRIVILEGED_EXEC') {
+                return `Exec commands:
+  clear              Reset functions
+  configure          Enter configuration mode
+  copy               Copy from one file to another
+  dir                List files on a filesystem
+  disable            Turn off privileged commands
+  enable             Turn on privileged commands
+  exit               Exit from the EXEC
+  ping               Send echo messages
+  show               Show running system information
+  write              Write running configuration to memory or terminal`;
+            } else if (this.mode === 'GLOBAL_CONFIG') {
+                return `Configure commands:
+  do                 To run EXEC commands in config mode
+  end                Exit from configure mode
+  exit               Exit from configure mode
+  hostname           Set system's network name
+  interface          Select an interface to configure
+  ip                 Global IP configuration subcommands
+  no                 Negate a command or set defaults
+  router             Enable a routing process
+  vlan               Vlan configuration commands`;
+            } else if (this.mode === 'INTERFACE_CONFIG') {
+                return `Interface configuration commands:
+  description        Detailed description of this interface
+  exit               Exit from interface configuration mode
+  ip                 IP interface configuration subcommands
+  no                 Negate a command or set defaults
+  shutdown           Shutdown this interface`;
+            } else {
+                return `Commands:
+  exit               Exit current mode
+  end                Exit to privileged EXEC mode`;
+            }
+        }
+
+        if (cmd === 'clear') {
+            if (this.mode === 'USER_EXEC') {
+                return `% Command rejected: Place in Privileged EXEC mode first.`;
+            }
+            return `% Incomplete command.`;
+        }
 
 
         if (cmd === 'exit') {

@@ -2,6 +2,7 @@
 import { Command } from 'commander';
 import inquirer from 'inquirer';
 import chalk from 'chalk';
+import readline from 'readline';
 import { MultiAgentCoordinator } from './core/agent/MultiAgentCoordinator';
 import { PlinkSerialSession } from './infrastructure/protocols/PlinkSerial';
 import { SshSession } from './infrastructure/protocols/SshSession';
@@ -15,12 +16,22 @@ import { logger, createSpinner } from './cli/ui/ui';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { startSimulator } from './server';
+import { ShellSimulator } from './server/shell-simulator';
+import { startDashboardServer } from './server/dashboard';
 
 const program = new Command();
 let activeCoordinator: MultiAgentCoordinator | null = null;
+let liveDashboardServer: any = null;
 
 
 const cleanup = async () => {
+    if (liveDashboardServer) {
+        try {
+            liveDashboardServer.close();
+            logger.info('Live Visual Control Dashboard server closed.');
+        } catch {}
+        liveDashboardServer = null;
+    }
     if (activeCoordinator) {
         logger.info('Cleaning up active terminal connections and sub-processes...');
         try {
@@ -108,11 +119,18 @@ program
     .option('--no-ref-telemetry', 'Disable command-reference telemetry logs during startup')
     .option('--non-interactive', 'Disable interactive human-in-the-loop prompts (automatically reject dangerous commands)')
     .option('--rbac-role <role>', 'Role-based Access Control role (admin | read_only)', 'admin')
+    .option('--dashboard-port <port>', 'Port to host the live Visual Control Dashboard', '3000')
     
     .option('-g, --goal <intent>', 'The execution goal for the agent to achieve')
     .action(async (options) => {
         let provider = options.provider as LLMProvider;
         let localType = options.localType as string | undefined;
+        if (localType) {
+            localType = localType.toLowerCase().trim();
+            if (localType === 'llmstudio') {
+                localType = 'lmstudio';
+            }
+        }
         let apiKey = options.api_key || options.apiKey;
         let model = options.model;
         let endpoint = options.endpoint;
@@ -136,6 +154,7 @@ program
         let refTelemetry = options.refTelemetry !== false;
         let nonInteractive = options.nonInteractive === true;
         let rbacRole = options.rbacRole || 'admin';
+        let dashboardPort = options.dashboardPort ? parseInt(options.dashboardPort, 10) : 3000;
 
         if (nonInteractive) {
             process.env.CISCOLLM_NON_INTERACTIVE = 'true';
@@ -720,6 +739,11 @@ program
         logger.info(`Initializing system link in [${provider.toUpperCase()}] mode using ${protocol.toUpperCase()}...`);
             logger.info(`Command reference policy: strict=${strictCommandRef ? 'on' : 'off'}, telemetry=${refTelemetry ? 'on' : 'off'}`);
         activeCoordinator = new MultiAgentCoordinator();
+        try {
+            liveDashboardServer = startDashboardServer(activeCoordinator, dashboardPort);
+        } catch (e: any) {
+            logger.warn(`Failed to auto-start live Visual Control Dashboard: ${e.message}`);
+        }
 
         const netconfSessionOptions = {
             username,
@@ -861,6 +885,60 @@ program
         const telnetPort = parseInt(options.telnetPort, 10);
         const httpPort = parseInt(options.httpPort, 10);
         startSimulator({ sshPort, telnetPort, httpPort });
+    });
+
+program
+    .command('shell')
+    .description('Launch the interactive Cisco IOS mock shell simulator directly')
+    .action(() => {
+        const simulator = new ShellSimulator();
+        
+        console.clear();
+        console.log(chalk.bold.yellow('============================================================'));
+        console.log(chalk.bold.yellow('   Cisco IOS Interactive Mock Shell Simulator (v1.1.0)'));
+        console.log(chalk.bold.yellow('============================================================'));
+        const welcomeBanner = `\r\nCisco IOS Software, C2960 Software (C2960-LANBASEK9-M), Version 15.0(2)SE4, RELEASE SOFTWARE (fc1)\r\nTechnical Support: http://www.cisco.com/techsupport\r\nCopyright (c) 1986-2013 by Cisco Systems, Inc.\r\nCompiled Wed 26-Jun-13 02:49 by prod_rel_team\r\n\r\n`;
+        console.log(welcomeBanner);
+
+        const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+
+        const promptUser = () => {
+            rl.question(simulator.getPrompt(), (line: string) => {
+                const cmd = line.trim();
+                if (cmd.toLowerCase() === 'exit' && simulator.mode === 'USER_EXEC') {
+                    console.log('Connection closed by foreign host.');
+                    rl.close();
+                    return;
+                }
+
+                try {
+                    const output = simulator.execute(cmd);
+                    if (output) {
+                        console.log(output);
+                    }
+                } catch (err: any) {
+                    console.log(`% Error: ${err.message}`);
+                }
+                promptUser();
+            });
+        };
+
+        promptUser();
+
+        rl.on('close', () => {
+            process.exit(0);
+        });
+    });
+
+program
+    .command('dashboard')
+    .description('Start the Visual Control Dashboard server standalone')
+    .option('--port <number>', 'Port for the dashboard server', '3000')
+    .action((options) => {
+        const port = parseInt(options.port, 10);
+        const coordinator = new MultiAgentCoordinator();
+        startDashboardServer(coordinator, port);
+        console.log(chalk.yellow('Standalone mode: Visualizing historical records and active topology when connected.'));
     });
 
 program.parse(process.argv);

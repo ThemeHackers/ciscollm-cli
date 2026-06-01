@@ -14,6 +14,7 @@ import { PreExecutionValidator } from '../guardrails/PreExecutionValidator';
 import { AuditLogger } from '../guardrails/AuditLogger';
 import { HierarchicalAgentManager } from './HierarchicalAgentManager';
 import { StateDiff } from '../rollback/StateDiff';
+import { NetworkAudit } from '../guardrails/NetworkAudit';
 
 type AgentLoopOptions = {
     strictReferenceMode?: boolean;
@@ -74,6 +75,19 @@ export class CiscoAgentLoop {
         let totalCompletionTokens = 0;
         let totalTokens = 0;
         let totalLlmDurationMs = 0;
+
+        const networkAudit = new NetworkAudit(this.coordinator);
+        const preFlightSnapshots = new Map<string, any>();
+        const auditSpinner = createSpinner('Running Pre-Flight Network Audits...').start();
+        for (const deviceId of this.coordinator.getSessions().keys()) {
+            try {
+                const snap = await networkAudit.takeSnapshot(deviceId);
+                preFlightSnapshots.set(deviceId, snap);
+            } catch (e: any) {
+                logger.warn(`Pre-flight audit failed for ${deviceId}: ${e.message}`);
+            }
+        }
+        auditSpinner.succeed('Pre-Flight Network Audits completed.');
 
         const backupSpinner = createSpinner('Initializing device configuration backups to flash...').start();
         try {
@@ -309,6 +323,20 @@ export class CiscoAgentLoop {
         if (executionDepth >= MAX_STEPS && dynamicLoopActive) {
             logger.warn('Maximum loop steps limit reached.');
         }
+
+        const postAuditSpinner = createSpinner('Running Post-Flight Network Audits...').start();
+        for (const [deviceId, preSnap] of preFlightSnapshots.entries()) {
+            try {
+                const postSnap = await networkAudit.takeSnapshot(deviceId);
+                postAuditSpinner.stop();
+                const report = NetworkAudit.renderAuditReport(preSnap, postSnap);
+                console.log(report);
+            } catch (e: any) {
+                postAuditSpinner.stop();
+                logger.warn(`Post-flight audit failed for ${deviceId}: ${e.message}`);
+            }
+        }
+        if (postAuditSpinner.isSpinning) postAuditSpinner.stop();
 
         const totalDurationMs = Date.now() - totalStartTime;
         const avgLlmSpeed = totalLlmDurationMs > 0 ? (totalCompletionTokens / (totalLlmDurationMs / 1000)) : 0;
@@ -687,6 +715,7 @@ export class CiscoAgentLoop {
                 let diffSummary = '';
                 if (snapshotA && snapshotB) {
                     const diffResult = StateDiff.diff(snapshotA, snapshotB);
+                    StateDiff.recordDiff(targetDeviceId, diffResult);
                     diffSummary = StateDiff.renderDiff(diffResult);
                     if (diffSummary && diffSummary !== 'No configuration differences detected.') {
                         logger.info(`[State Diff for ${targetDeviceId}]:\n${diffSummary}`);

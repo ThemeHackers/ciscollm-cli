@@ -1,4 +1,5 @@
 import { TopologyLink } from '../../shared/types';
+import { normalizeInterfaceName } from '../../shared/utils';
 
 export class TopologyDiscovery {
     public static parseCdpNeighbors(localDeviceId: string, output: string): TopologyLink[] {
@@ -17,8 +18,8 @@ export class TopologyDiscovery {
             }
 
             const remoteDeviceId = match[1];
-            const localInterface = match[2].replace(/\s+/g, ' ').trim();
-            const remoteInterface = match[3].replace(/\s+/g, ' ').trim();
+            const localInterface = normalizeInterfaceName(match[2]);
+            const remoteInterface = normalizeInterfaceName(match[3]);
 
             links.push({
                 localDeviceId,
@@ -50,8 +51,8 @@ export class TopologyDiscovery {
             links.push({
                 localDeviceId,
                 remoteDeviceId: match[1],
-                localInterface: match[2],
-                remoteInterface: match[3],
+                localInterface: normalizeInterfaceName(match[2]),
+                remoteInterface: normalizeInterfaceName(match[3]),
                 protocol: 'lldp'
             });
         }

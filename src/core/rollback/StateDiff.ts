@@ -38,6 +38,19 @@ export interface StateDiffResult {
 }
 
 export class StateDiff {
+    private static diffHistory: Array<{ timestamp: string; deviceId: string; diff: StateDiffResult }> = [];
+
+    public static recordDiff(deviceId: string, diff: StateDiffResult): void {
+        this.diffHistory.push({
+            timestamp: new Date().toISOString(),
+            deviceId,
+            diff
+        });
+    }
+
+    public static getDiffHistory(): Array<{ timestamp: string; deviceId: string; diff: StateDiffResult }> {
+        return this.diffHistory;
+    }
     
     public static diff(before: DeviceStateSnapshot, after: DeviceStateSnapshot): StateDiffResult {
         const result: StateDiffResult = {

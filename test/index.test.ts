@@ -332,6 +332,7 @@ PlinkSerialSession.listAvailableComPorts().then(async (ports) => {
         console.log('\n[Test 16]: Evaluating ShellSimulator new features (OSPF, IP Routing, Flash/Backup)...');
         const { ShellSimulator } = require('../src/server/shell-simulator');
         const sim = new ShellSimulator();
+        sim.execute('enable');
         
         let routeOut = sim.execute('show ip route');
         assert.ok(!routeOut.includes('% IP routing table is not enabled'), 'Routing should be enabled by default');

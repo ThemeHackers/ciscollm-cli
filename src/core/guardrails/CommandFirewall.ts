@@ -1,19 +1,68 @@
 import * as readline from 'readline';
 import chalk from 'chalk';
+import { readFileSync, existsSync } from 'fs';
+import { join } from 'path';
 import { DESTRUCTIVE_TOKENS, DEFAULT_PROTECTED_INTERFACES } from '../../shared/constants';
+import { parseSimpleYaml } from '../../shared/utils';
 
 export class CommandFirewall {
     private protectedInterfaces: string[];
+    private playbook: any = null;
 
     constructor(protectedInterfaces: string[] = DEFAULT_PROTECTED_INTERFACES) {
         this.protectedInterfaces = protectedInterfaces.map(i => i.toLowerCase().trim());
+        
+        try {
+            const yamlPath = join(process.cwd(), '.ciscollm-guard.yaml');
+            if (existsSync(yamlPath)) {
+                const content = readFileSync(yamlPath, 'utf8');
+                this.playbook = parseSimpleYaml(content);
+                console.log(chalk.green(`[+] Loaded custom safety playbook from .ciscollm-guard.yaml`));
+                
+                if (this.playbook && Array.isArray(this.playbook.protectedInterfaces)) {
+                    this.playbook.protectedInterfaces.forEach((intf: string) => {
+                        const normalizedIntf = intf.toLowerCase().trim();
+                        if (!this.protectedInterfaces.includes(normalizedIntf)) {
+                            this.protectedInterfaces.push(normalizedIntf);
+                        }
+                    });
+                }
+            }
+        } catch (e: any) {
+            console.warn(chalk.yellow(`[!] Warning loading safety playbook: ${e.message}`));
+        }
     }
 
     
     public checkCommand(command: string, currentInterfaceContext: string | null): { dangerous: boolean; reason?: string } {
         const normalized = command.toLowerCase().trim();
 
-       
+        if (this.playbook) {
+            if (Array.isArray(this.playbook.blockedCommands)) {
+                const isBlocked = this.playbook.blockedCommands.some((blocked: string) => 
+                    normalized === blocked.toLowerCase().trim() || normalized.includes(blocked.toLowerCase().trim())
+                );
+                if (isBlocked) {
+                    return {
+                        dangerous: true,
+                        reason: `Command is strictly blocked by the custom safety playbook (.ciscollm-guard.yaml).`
+                    };
+                }
+            }
+
+            if (Array.isArray(this.playbook.requireConfirmationCommands)) {
+                const requiresConfirm = this.playbook.requireConfirmationCommands.some((cmd: string) => 
+                    normalized === cmd.toLowerCase().trim() || normalized.includes(cmd.toLowerCase().trim())
+                );
+                if (requiresConfirm) {
+                    return {
+                        dangerous: true,
+                        reason: `Command requires administrator confirmation according to safety playbook (.ciscollm-guard.yaml).`
+                    };
+                }
+            }
+        }
+
         if (normalized.startsWith('no ip route 0.0.0.0') || normalized.startsWith('no ip route 0.0.0.0 0.0.0.0')) {
             return {
                 dangerous: true,

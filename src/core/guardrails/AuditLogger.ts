@@ -14,6 +14,11 @@ export interface AuditLogEntry {
 
 export class AuditLogger {
     private static logFile = path.resolve(process.cwd(), 'audit.log');
+    private static entries: AuditLogEntry[] = [];
+
+    public static getEntries(): AuditLogEntry[] {
+        return this.entries;
+    }
 
     public static setLogFile(filePath: string): void {
         this.logFile = path.resolve(process.cwd(), filePath);
@@ -21,6 +26,7 @@ export class AuditLogger {
 
 
     public static log(entry: AuditLogEntry): void {
+        this.entries.push(entry);
         const formattedTimestamp = entry.timestamp || new Date().toISOString();
         const outputCleaned = entry.outputSnippet 
             ? entry.outputSnippet.replace(/\r?\n/g, ' ').substring(0, 100) + '...'
