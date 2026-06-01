@@ -13,6 +13,7 @@ import { NetconfSession } from './infrastructure/protocols/NetconfSession';
 import { CmlSession } from './infrastructure/protocols/CmlSession';
 import { logger, createSpinner } from './cli/ui/ui';
 import { readFileSync } from 'fs';
+import { join } from 'path';
 import { startSimulator } from './server';
 
 const program = new Command();
@@ -65,10 +66,17 @@ process.on('uncaughtException', async (err) => {
     process.exit(1);
 });
 
+let cliVersion = '1.0.0';
+try {
+    const pkgPath = join(__dirname, '../package.json');
+    const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
+    cliVersion = pkg.version;
+} catch (e) {}
+
 program
     .name('ciscollm')
     .description('Autonomous Agent Interface managing local Cisco Hardware using LLM Tooling.')
-    .version('1.0.0');
+    .version(cliVersion);
 
 program
     .command('run')
