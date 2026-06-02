@@ -74,7 +74,16 @@ export class LLMClient {
                     if (typeof error.response.data === 'string') {
                         bodyDetails = error.response.data;
                     } else if (error.response.data.constructor && error.response.data.constructor.name === 'IncomingMessage') {
-                        bodyDetails = `[Stream Response]`;
+                        try {
+                            bodyDetails = await new Promise<string>((resolve) => {
+                                let res = '';
+                                error.response.data.on('data', (chunk: any) => { res += chunk.toString(); });
+                                error.response.data.on('end', () => resolve(res));
+                                error.response.data.on('error', () => resolve('[Stream Read Error]'));
+                            });
+                        } catch {
+                            bodyDetails = `[Stream Response]`;
+                        }
                     } else {
                         try {
                             bodyDetails = JSON.stringify(error.response.data);
@@ -432,40 +441,80 @@ export class LLMClient {
         const retryDelayMs = 1500;
         const errors: string[] = [];
 
+        let success = false;
         for (let attempt = 1; attempt <= maxRetries; attempt++) {
             errors.length = 0;
             for (const url of probeUrls) {
                 try {
                     const response = await axios.get(url, { timeout: timeoutMs });
                     if (response.status >= 200 && response.status < 500) {
-                        return;
+                        success = true;
+                        break;
                     }
                     errors.push(`${url} -> HTTP ${response.status}`);
                 } catch (err: any) {
                     errors.push(`${url} -> ${err.message}`);
                 }
             }
+            if (success) break;
             if (attempt < maxRetries) {
                 console.warn(chalk.yellow(`❯ LLM endpoint preflight check failed. Retrying in ${retryDelayMs}ms (Attempt ${attempt}/${maxRetries})...`));
                 await new Promise(r => setTimeout(r, retryDelayMs));
             }
         }
 
-        let guidance = '';
-        if (this.provider === 'local') {
-            if (this.localType === 'lmstudio' || base.includes('1234')) {
-                guidance = 'Please start LM Studio, enable the Developer Preset / Local Server, and verify the port is set to 1234.';
+        if (!success) {
+            let guidance = '';
+            if (this.provider === 'local') {
+                if (this.localType === 'lmstudio' || base.includes('1234')) {
+                    guidance = 'Please start LM Studio, enable the Developer Preset / Local Server, and verify the port is set to 1234.';
+                } else {
+                    guidance = 'Please run "ollama serve" in your terminal and verify the model is pulled (e.g., "ollama pull qwen3.5:4b" or the model specified in your config).';
+                }
             } else {
-                guidance = 'Please run "ollama serve" in your terminal and verify the model is pulled (e.g., "ollama pull qwen3.5:4b" or the model specified in your config).';
+                guidance = 'Check your OpenRouter API key, endpoint URL, network connectivity, and service status.';
             }
-        } else {
-            guidance = 'Check your OpenRouter API key, endpoint URL, network connectivity, and service status.';
+
+            throw new Error(
+                `LLM endpoint preflight failed for [${this.provider}] (type: ${this.localType || 'generic'}) at "${this.endpoint}". ` +
+                `Probes: ${errors.join(' | ')}. ${guidance}`
+            );
         }
 
-        throw new Error(
-            `LLM endpoint preflight failed for [${this.provider}] (type: ${this.localType || 'generic'}) at "${this.endpoint}". ` +
-            `Probes: ${errors.join(' | ')}. ${guidance}`
-        );
+        await this.resolveActiveModel();
+    }
+
+    public async resolveActiveModel(): Promise<void> {
+        if (this.provider === 'cloud') {
+            return;
+        }
+        try {
+            const base = this.endpoint.replace(/\/$/, '');
+            const modelsUrl = `${base}/models`;
+            const response = await axios.get(modelsUrl, { timeout: 3500 });
+            const data = response.data;
+            let loadedModels: string[] = [];
+            
+            if (data && Array.isArray(data.data)) {
+                loadedModels = data.data.map((m: any) => m.id).filter(Boolean);
+            } else if (data && Array.isArray(data.models)) {
+                loadedModels = data.models.map((m: any) => m.name || m.id).filter(Boolean);
+            } else if (Array.isArray(data)) {
+                loadedModels = data.map((m: any) => typeof m === 'string' ? m : m.id || m.name).filter(Boolean);
+            }
+
+            if (loadedModels.length > 0) {
+                const targetLower = this.modelName.toLowerCase();
+                const isLoaded = loadedModels.some(m => m.toLowerCase() === targetLower);
+                if (!isLoaded) {
+                    const oldModel = this.modelName;
+                    this.modelName = loadedModels[0];
+                    console.log(chalk.blue(`❯ Dynamic Model Resolution: Auto-selected loaded model "${this.modelName}" (fallback from "${oldModel}")`));
+                }
+            }
+        } catch (err) {
+            // Graceful ignore
+        }
     }
 
     private getApiV1BaseUrl(): string {
