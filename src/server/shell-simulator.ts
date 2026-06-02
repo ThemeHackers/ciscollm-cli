@@ -1,6 +1,6 @@
 import { PROMPT_REGEX } from '../shared/constants';
 
-export type CliMode = 'USER_EXEC' | 'PRIVILEGED_EXEC' | 'GLOBAL_CONFIG' | 'INTERFACE_CONFIG' | 'OSPF_CONFIG' | 'DHCP_CONFIG' | 'ACL_CONFIG';
+export type CliMode = 'USER_EXEC' | 'PRIVILEGED_EXEC' | 'GLOBAL_CONFIG' | 'INTERFACE_CONFIG' | 'OSPF_CONFIG' | 'DHCP_CONFIG' | 'ACL_CONFIG' | 'VLAN_CONFIG';
 
 export interface InterfaceState {
     name: string;
@@ -9,6 +9,9 @@ export interface InterfaceState {
     adminShutdown: boolean;
     lineProtocolUp: boolean;
     description: string | null;
+    isSwitchport?: boolean;
+    switchportMode?: 'access' | 'trunk';
+    vlan?: number;
 }
 
 export interface RouteState {
@@ -132,6 +135,8 @@ export class ShellSimulator {
                 return `${this.hostname}(config-dhcp)# `;
             case 'ACL_CONFIG':
                 return `${this.hostname}(config-ext-nacl)# `;
+            case 'VLAN_CONFIG':
+                return `${this.hostname}(config-vlan)# `;
             default:
                 return `${this.hostname}# `;
         }
@@ -243,7 +248,7 @@ show the available options.`;
 
 
         if (cmd === 'exit') {
-            if (this.mode === 'INTERFACE_CONFIG' || this.mode === 'OSPF_CONFIG' || this.mode === 'DHCP_CONFIG' || this.mode === 'ACL_CONFIG') {
+            if (this.mode === 'INTERFACE_CONFIG' || this.mode === 'OSPF_CONFIG' || this.mode === 'DHCP_CONFIG' || this.mode === 'ACL_CONFIG' || this.mode === 'VLAN_CONFIG') {
                 this.mode = 'GLOBAL_CONFIG';
                 this.activeInterface = null;
                 this.activeVlan = null;
@@ -343,7 +348,7 @@ show the available options.`;
                 if (!isNaN(vlanId)) {
                     this.vlans.add(vlanId);
                     this.activeVlan = vlanId;
-                    this.mode = 'GLOBAL_CONFIG';
+                    this.mode = 'VLAN_CONFIG';
                     return '';
                 }
             }
@@ -426,6 +431,18 @@ show the available options.`;
         }
 
 
+        if (this.mode === 'VLAN_CONFIG' && this.activeVlan !== null) {
+            if (cmd === 'name' && args[1]) {
+                this.vlanNames.set(this.activeVlan, args.slice(1).join(' '));
+                return '';
+            }
+            if (cmd === 'no' && args[1] === 'name') {
+                this.vlanNames.set(this.activeVlan, `VLAN${this.activeVlan.toString().padStart(4, '0')}`);
+                return '';
+            }
+            return `% Invalid input detected at '^' marker.`;
+        }
+
         if (this.mode === 'INTERFACE_CONFIG' && this.activeInterface) {
             const iface = this.interfaces.get(this.activeInterface)!;
 
@@ -471,6 +488,39 @@ show the available options.`;
 
             if (cmd === 'no' && args[1] === 'description') {
                 iface.description = null;
+                return '';
+            }
+
+            if (cmd === 'switchport') {
+                if (args[1] === 'mode' && args[2] === 'access') {
+                    iface.switchportMode = 'access';
+                    iface.isSwitchport = true;
+                    return '';
+                }
+                if (args[1] === 'access' && args[2] === 'vlan' && args[3]) {
+                    const vlanId = parseInt(args[3], 10);
+                    if (!isNaN(vlanId)) {
+                        iface.vlan = vlanId;
+                        iface.isSwitchport = true;
+                        let output = '';
+                        if (!this.vlans.has(vlanId)) {
+                            this.vlans.add(vlanId);
+                            this.vlanNames.set(vlanId, `VLAN${vlanId.toString().padStart(4, '0')}`);
+                            output = `%% Access VLAN ${vlanId} does not exist. Creating vlan ${vlanId}\n`;
+                        }
+                        return output;
+                    }
+                }
+                if (!args[1]) {
+                    iface.isSwitchport = true;
+                    return '';
+                }
+            }
+
+            if (cmd === 'no' && args[1] === 'switchport') {
+                iface.isSwitchport = false;
+                iface.vlan = undefined;
+                iface.switchportMode = undefined;
                 return '';
             }
 
@@ -616,7 +666,11 @@ This product contains cryptographic features and is subject to Y...
                 out += '---- -------------------------------- --------- -------------------------------\n';
                 for (const vid of this.vlans) {
                     const name = this.vlanNames.get(vid) || `VLAN${vid.toString().padStart(4, '0')}`;
-                    out += `${vid.toString().padEnd(4)} ${name.padEnd(32)} active    \n`;
+                    const ports = Array.from(this.interfaces.values())
+                        .filter(iface => iface.vlan === vid)
+                        .map(iface => this.shortenInterfaceName(iface.name))
+                        .join(', ');
+                    out += `${vid.toString().padEnd(4)} ${name.padEnd(32)} active    ${ports}\n`;
                 }
                 return out;
             }
@@ -740,6 +794,14 @@ Success rate is 100 percent (5/5), round-trip min/avg/max = 1/1/4 ms
             return 'Vlan' + name.substring(2);
         }
         return name;
+    }
+
+    private shortenInterfaceName(name: string): string {
+        return name
+            .replace('GigabitEthernet', 'Gi')
+            .replace('FastEthernet', 'Fa')
+            .replace('TenGigabitEthernet', 'Te')
+            .replace('Loopback', 'Lo');
     }
 
     private getPrefixLength(mask: string): number {

@@ -26,6 +26,26 @@ export class PreExecutionValidator {
             };
         }
 
+        const routeMatch = /^no\s+ip\s+route\s+(\d{1,3}(?:\.\d{1,3}){3})\s+(\d{1,3}(?:\.\d{1,3}){3})/i.exec(normalized);
+        if (routeMatch) {
+            const network = routeMatch[1];
+            const mask = routeMatch[2];
+            const ipRegex = /^\d{1,3}(?:\.\d{1,3}){3}$/;
+            const checkIps = ['192.168.1.254'];
+            if (ipRegex.test(deviceId)) {
+                checkIps.push(deviceId);
+            }
+            for (const ip of checkIps) {
+                if (PreExecutionValidator.ipInSubnet(ip, network, mask)) {
+                    return {
+                        safe: false,
+                        warnLevel: 'CRITICAL',
+                        reason: `Command attempts to remove the static route (${network}/${mask}) which covers the target device IP or local management IP (${ip}). This will sever SSH/Telnet connectivity.`
+                    };
+                }
+            }
+        }
+
     
         if (normalized.startsWith('router ospf') || normalized.startsWith('router bgp') || normalized.startsWith('router rip')) {
             return {
@@ -82,5 +102,22 @@ export class PreExecutionValidator {
             safe: true,
             warnLevel: 'INFO'
         };
+    }
+
+    private static ipInSubnet(ip: string, network: string, mask: string): boolean {
+        try {
+            const ipParts = ip.split('.').map(Number);
+            const netParts = network.split('.').map(Number);
+            const maskParts = mask.split('.').map(Number);
+            if (ipParts.length !== 4 || netParts.length !== 4 || maskParts.length !== 4) return false;
+            for (let i = 0; i < 4; i++) {
+                if ((ipParts[i] & maskParts[i]) !== (netParts[i] & maskParts[i])) {
+                    return false;
+                }
+            }
+            return true;
+        } catch {
+            return false;
+        }
     }
 }

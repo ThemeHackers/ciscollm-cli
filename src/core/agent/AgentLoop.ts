@@ -703,10 +703,11 @@ export class CiscoAgentLoop {
                     reason: `Rollback triggered by error ${verification.errorType}. Reverted state successfully.`
                 });
                 
+                const promptAfterRollback = session.getState().prompt;
                 this.injectToolResponse(
                     call.id,
                     'execute_ios_command',
-                    `IOS Error [${verification.errorType}]:\n${processedOutput}\n\nAutomated configuration rollback executed:\n${rollbackLogs}`
+                    `IOS Error [${verification.errorType}]:\n${processedOutput}\n\nAutomated configuration rollback executed:\n${rollbackLogs}\n\n[System Alert]: Reverted to state prior to the current transaction. The active CLI prompt is now "${promptAfterRollback}".`
                 );
             } else {
                 cmdSpinner.stop();

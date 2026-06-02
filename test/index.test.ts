@@ -396,6 +396,50 @@ PlinkSerialSession.listAvailableComPorts().then(async (ports) => {
         assert.ok(rollbackOut.includes('Rollback Done'), 'Should rollback configuration successfully');
         assert.strictEqual(sim.hostname, 'Switch1', 'Hostname should revert to Switch1 after configuration replace');
         
+        
+        sim.execute('configure terminal');
+        sim.execute('vlan 50');
+        assert.strictEqual(sim.mode, 'VLAN_CONFIG', 'vlan 50 should transition simulator to VLAN_CONFIG mode');
+        assert.strictEqual(sim.getPrompt(), 'Switch1(config-vlan)# ', 'vlan 50 should update prompt to (config-vlan)#');
+        
+        
+        sim.execute('name Finance_Dept');
+        assert.strictEqual(sim.vlanNames.get(50), 'Finance_Dept', 'name command in VLAN_CONFIG mode should set VLAN name');
+        
+
+        sim.execute('exit');
+        assert.strictEqual(sim.mode, 'GLOBAL_CONFIG', 'exit in VLAN_CONFIG should return to GLOBAL_CONFIG');
+        
+       
+        sim.execute('interface GigabitEthernet0/1');
+        assert.strictEqual(sim.mode, 'INTERFACE_CONFIG', 'interface command should transition to INTERFACE_CONFIG');
+        sim.execute('switchport');
+        const gi01 = sim.interfaces.get('GigabitEthernet0/1')!;
+        assert.strictEqual(gi01.isSwitchport, true, 'switchport command should enable switchport flag');
+        
+        sim.execute('switchport mode access');
+        assert.strictEqual(gi01.switchportMode, 'access', 'switchport mode access should configure access mode');
+        
+        const vlanAccessOut = sim.execute('switchport access vlan 60');
+        assert.ok(vlanAccessOut.includes('Creating vlan 60'), 'Should auto-create non-existent VLAN');
+        assert.strictEqual(gi01.vlan, 60, 'switchport access vlan should assign VLAN 60 to port');
+        assert.ok(sim.vlans.has(60), 'VLAN 60 should be created in the global VLAN list');
+
+      
+        sim.execute('end');
+        const vlanBriefOut = sim.execute('show vlan brief');
+        assert.ok(vlanBriefOut.includes('VLAN0060') || vlanBriefOut.includes('60'), 'show vlan brief should contain VLAN 60');
+        assert.ok(vlanBriefOut.includes('Gi0/1'), 'show vlan brief should list Gi0/1 under VLAN 60 ports');
+
+
+        const dummyTopology = { devices: [], links: [] } as any;
+        const routeValidation1 = PreExecutionValidator.validateCommand('no ip route 192.168.1.0 255.255.255.0', '192.168.1.254', dummyTopology, null);
+        assert.strictEqual(routeValidation1.safe, false, 'Deleting management network route should be unsafe');
+        assert.strictEqual(routeValidation1.warnLevel, 'CRITICAL', 'Deleting management network route warning should be CRITICAL');
+
+        const routeValidation2 = PreExecutionValidator.validateCommand('no ip route 10.0.0.0 255.0.0.0', '192.168.1.254', dummyTopology, null);
+        assert.strictEqual(routeValidation2.safe, true, 'Deleting non-management route should be safe');
+
         console.log(' -> ShellSimulator new features test passed.');
 
         console.log('\nAll Unit Tests Finished Successfully!');
