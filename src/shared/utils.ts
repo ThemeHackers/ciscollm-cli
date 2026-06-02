@@ -1,14 +1,26 @@
 export function normalizeInterfaceName(name: string): string {
     let clean = name.toLowerCase().replace(/\s+/g, '').trim();
-    if (clean.startsWith('gi') && !clean.startsWith('gigabitethernet')) {
+    if (clean.startsWith('gigabitethernet')) {
+      
+    } else if (clean.startsWith('gig')) {
+        clean = clean.replace(/^gig/, 'gigabitethernet');
+    } else if (clean.startsWith('gi')) {
         clean = clean.replace(/^gi/, 'gigabitethernet');
-    } else if (clean.startsWith('fa') && !clean.startsWith('fastethernet')) {
+    } else if (clean.startsWith('fastethernet')) {
+        
+    } else if (clean.startsWith('fa')) {
         clean = clean.replace(/^fa/, 'fastethernet');
-    } else if (clean.startsWith('lo') && !clean.startsWith('loopback')) {
+    } else if (clean.startsWith('loopback')) {
+    
+    } else if (clean.startsWith('lo')) {
         clean = clean.replace(/^lo/, 'loopback');
-    } else if (clean.startsWith('vl') && !clean.startsWith('vlan')) {
+    } else if (clean.startsWith('vlan')) {
+
+    } else if (clean.startsWith('vl')) {
         clean = clean.replace(/^vl/, 'vlan');
-    } else if (clean.startsWith('te') && !clean.startsWith('tengigabitethernet') && !clean.startsWith('ten-gigabitethernet')) {
+    } else if (clean.startsWith('tengigabitethernet') || clean.startsWith('ten-gigabitethernet')) {
+       
+    } else if (clean.startsWith('te')) {
         clean = clean.replace(/^te/, 'tengigabitethernet');
     }
     return clean;

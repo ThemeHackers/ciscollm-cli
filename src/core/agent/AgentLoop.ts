@@ -744,6 +744,16 @@ export class CiscoAgentLoop {
         }
     }
 
+    private prefixLengthToMask(prefix: number): string {
+        const mask = [];
+        for (let i = 0; i < 4; i++) {
+            const n = Math.min(prefix, 8);
+            mask.push(256 - Math.pow(2, 8 - n));
+            prefix -= n;
+        }
+        return mask.join('.');
+    }
+
     private async captureDeviceSnapshot(deviceId: string): Promise<any> {
         const session = this.coordinator.getSession(deviceId);
         if (!session) return null;
@@ -769,6 +779,123 @@ export class CiscoAgentLoop {
                 routes: [...mock.routes],
                 vlans: Array.from(mock.vlans as Set<number>)
             };
+        }
+
+        // Real devices over SSH, Telnet, Serial, etc.
+        try {
+            const state = session.getState();
+            const prefix = (state.currentMode === 'GLOBAL_CONFIG' || state.currentMode === 'INTERFACE_CONFIG') ? 'do ' : '';
+
+            let configText = '';
+            try {
+                configText = await session.execute(`${prefix}show running-config`);
+            } catch (err: any) {
+                logger.warn(`Failed to execute show running-config: ${err.message}`);
+            }
+
+            let routesText = '';
+            try {
+                routesText = await session.execute(`${prefix}show ip route`);
+            } catch (err: any) {
+                logger.warn(`Failed to execute show ip route: ${err.message}`);
+            }
+
+            let vlansText = '';
+            try {
+                vlansText = await session.execute(`${prefix}show vlan brief`);
+            } catch (err: any) {
+                try {
+                    vlansText = await session.execute(`${prefix}show vlan`);
+                } catch {
+                    // ignore
+                }
+            }
+
+            const interfaces: any[] = [];
+            if (configText) {
+                const lines = configText.split(/\r?\n/);
+                let currentInterface: any = null;
+                for (const line of lines) {
+                    const trimmed = line.trim();
+                    if (trimmed.startsWith('interface ')) {
+                        const name = trimmed.substring(10).trim();
+                        currentInterface = {
+                            name,
+                            ip: null,
+                            subnet: null,
+                            adminShutdown: false,
+                            lineProtocolUp: true,
+                            description: null
+                        };
+                        interfaces.push(currentInterface);
+                    } else if (currentInterface) {
+                        if (trimmed.startsWith('ip address ')) {
+                            const parts = trimmed.substring(11).trim().split(/\s+/);
+                            if (parts.length >= 2) {
+                                currentInterface.ip = parts[0];
+                                currentInterface.subnet = parts[1];
+                            }
+                        } else if (trimmed.startsWith('description ')) {
+                            currentInterface.description = trimmed.substring(12).trim();
+                        } else if (trimmed === 'shutdown') {
+                            currentInterface.adminShutdown = true;
+                            currentInterface.lineProtocolUp = false;
+                        } else if (trimmed === 'no shutdown') {
+                            currentInterface.adminShutdown = false;
+                            currentInterface.lineProtocolUp = true;
+                        } else if (line.startsWith('!') || trimmed === 'end') {
+                            currentInterface = null;
+                        }
+                    }
+                }
+            }
+
+            const routes: any[] = [];
+            if (routesText) {
+                const routeLines = routesText.split(/\r?\n/);
+                for (const line of routeLines) {
+                    const trimmed = line.trim();
+                    const routeMatch = /^([C|S|R|B|O|D])\s+(\d{1,3}(?:\.\d{1,3}){3})\/(\d+)\s+(?:via\s+(\d{1,3}(?:\.\d{1,3}){3})|is\s+directly\s+connected,\s+(\S+))/i.exec(trimmed);
+                    if (routeMatch) {
+                        const network = routeMatch[2];
+                        const prefixLen = parseInt(routeMatch[3], 10);
+                        const nextHop = routeMatch[4] || null;
+                        const mask = this.prefixLengthToMask(prefixLen);
+                        routes.push({
+                            network,
+                            mask,
+                            nextHop
+                        });
+                    }
+                }
+            }
+
+            const vlans: number[] = [];
+            if (vlansText) {
+                const vlanLines = vlansText.split(/\r?\n/);
+                for (const line of vlanLines) {
+                    const trimmed = line.trim();
+                    const vlanMatch = /^(\d+)\s+(\S+)/.exec(trimmed);
+                    if (vlanMatch) {
+                        const vid = parseInt(vlanMatch[1], 10);
+                        if (!isNaN(vid) && !vlans.includes(vid)) {
+                            vlans.push(vid);
+                        }
+                    }
+                }
+            }
+
+            return {
+                deviceId,
+                timestamp: new Date().toISOString(),
+                sessionState: session.getState(),
+                interfaces,
+                routes,
+                vlans
+            };
+
+        } catch (e: any) {
+            logger.warn(`Failed to capture CLI-based device snapshot for diff: ${e.message}`);
         }
 
         return {

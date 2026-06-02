@@ -702,16 +702,42 @@ Success rate is 100 percent (5/5), round-trip min/avg/max = 1/1/4 ms
     }
 
     private normalizeInterfaceName(name: string): string {
-
         const lower = name.toLowerCase();
+        if (lower.startsWith('gigabitethernet')) {
+            return 'GigabitEthernet' + name.substring(15);
+        }
+        if (lower.startsWith('gig')) {
+            return 'GigabitEthernet' + name.substring(3);
+        }
         if (lower.startsWith('gi')) {
             return 'GigabitEthernet' + name.substring(2);
+        }
+        if (lower.startsWith('loopback')) {
+            return 'Loopback' + name.substring(8);
         }
         if (lower.startsWith('lo')) {
             return 'Loopback' + name.substring(2);
         }
+        if (lower.startsWith('fastethernet')) {
+            return 'FastEthernet' + name.substring(12);
+        }
         if (lower.startsWith('fa')) {
             return 'FastEthernet' + name.substring(2);
+        }
+        if (lower.startsWith('tengigabitethernet')) {
+            return 'TenGigabitEthernet' + name.substring(18);
+        }
+        if (lower.startsWith('ten-gigabitethernet')) {
+            return 'TenGigabitEthernet' + name.substring(19);
+        }
+        if (lower.startsWith('te')) {
+            return 'TenGigabitEthernet' + name.substring(2);
+        }
+        if (lower.startsWith('vlan')) {
+            return 'Vlan' + name.substring(4);
+        }
+        if (lower.startsWith('vl')) {
+            return 'Vlan' + name.substring(2);
         }
         return name;
     }

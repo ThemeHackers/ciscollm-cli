@@ -332,6 +332,24 @@ PlinkSerialSession.listAvailableComPorts().then(async (ports) => {
         console.log('\n[Test 16]: Evaluating ShellSimulator new features (OSPF, IP Routing, Flash/Backup)...');
         const { ShellSimulator } = require('../src/server/shell-simulator');
         const sim = new ShellSimulator();
+
+        
+        const simNormalize = (sim as any).normalizeInterfaceName.bind(sim);
+        assert.strictEqual(simNormalize('gi0/3'), 'GigabitEthernet0/3');
+        assert.strictEqual(simNormalize('GigabitEthernet0/3'), 'GigabitEthernet0/3');
+        assert.strictEqual(simNormalize('gig0/3'), 'GigabitEthernet0/3');
+        assert.strictEqual(simNormalize('fa0/1'), 'FastEthernet0/1');
+        assert.strictEqual(simNormalize('FastEthernet0/1'), 'FastEthernet0/1');
+        assert.strictEqual(simNormalize('lo0'), 'Loopback0');
+        assert.strictEqual(simNormalize('Loopback0'), 'Loopback0');
+
+        const { normalizeInterfaceName } = require('../src/shared/utils');
+        assert.strictEqual(normalizeInterfaceName('gi0/3'), 'gigabitethernet0/3');
+        assert.strictEqual(normalizeInterfaceName('GigabitEthernet0/3'), 'gigabitethernet0/3');
+        assert.strictEqual(normalizeInterfaceName('gig0/3'), 'gigabitethernet0/3');
+        assert.strictEqual(normalizeInterfaceName('fa0/1'), 'fastethernet0/1');
+        assert.strictEqual(normalizeInterfaceName('FastEthernet0/1'), 'fastethernet0/1');
+
         sim.execute('enable');
         
         let routeOut = sim.execute('show ip route');
