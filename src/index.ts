@@ -830,7 +830,8 @@ program
                 provider,
                 endpoint,
                 model,
-                apiKey
+                apiKey,
+                localType
             );
 
             const llmSpinner = createSpinner('Preflight check: validating LLM endpoint reachability...').start();

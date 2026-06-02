@@ -49,6 +49,8 @@ export class SshSession extends BaseSession {
                             console.log(chalk.cyan(`❯ Disabling pagination with standard commands...`));
                             const paginationCommands = [
                                 'terminal length 0',
+                                'terminal width 0',
+                                'terminal width 511',
                                 'screen-length 0 temporary',
                                 'set cli screen-length 0'
                             ];
@@ -88,7 +90,8 @@ export class SshSession extends BaseSession {
                 password: this.config.password,
                 privateKey: this.config.privateKey,
                 readyTimeout: 15000,
-                tryKeyboard: true
+                tryKeyboard: true,
+                keepaliveInterval: 10000
             });
         });
     }
@@ -143,8 +146,13 @@ export class SshSession extends BaseSession {
         return new Promise((resolve, reject) => {
             const commandStartIndex = this.buffer.length;
             
-            const timeout = setTimeout(() => {
+            const timeout = setTimeout(async () => {
                 this.eventEmitter.removeAllListeners('stream_updated');
+                try {
+                    chan.write('\r\n');
+                    await new Promise(r => setTimeout(r, 500));
+                    this.buffer = '';
+                } catch {}
                 reject(new Error(`SSH Command execution timed out after ${timeoutMs}ms: "${command}"`));
             }, timeoutMs);
 

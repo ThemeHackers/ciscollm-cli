@@ -15,6 +15,7 @@ import { AuditLogger } from '../guardrails/AuditLogger';
 import { HierarchicalAgentManager } from './HierarchicalAgentManager';
 import { StateDiff } from '../rollback/StateDiff';
 import { NetworkAudit } from '../guardrails/NetworkAudit';
+import { safeJsonParse } from '../../shared/utils';
 
 type AgentLoopOptions = {
     strictReferenceMode?: boolean;
@@ -526,7 +527,7 @@ export class CiscoAgentLoop {
     private async handleExecuteCommandCall(call: ToolCall): Promise<void> {
         let args;
         try {
-            args = JSON.parse(call.function.arguments);
+            args = safeJsonParse(call.function.arguments);
         } catch (e) {
             this.injectToolResponse(call.id, 'execute_ios_command', `Format Error: Invalid Tool Call arguments. Must be JSON.`);
             return;
@@ -758,30 +759,7 @@ export class CiscoAgentLoop {
         const session = this.coordinator.getSession(deviceId);
         if (!session) return null;
 
-        if (typeof (session as any).interfaces !== 'undefined') {
-            const mock = session as any;
-            const interfaceList: any[] = [];
-            for (const [name, conf] of mock.interfaces.entries()) {
-                interfaceList.push({
-                    name,
-                    ip: conf.ip,
-                    subnet: conf.subnet,
-                    adminShutdown: conf.adminShutdown,
-                    lineProtocolUp: conf.lineProtocolUp,
-                    description: conf.description
-                });
-            }
-            return {
-                deviceId,
-                timestamp: new Date().toISOString(),
-                sessionState: session.getState(),
-                interfaces: interfaceList,
-                routes: [...mock.routes],
-                vlans: Array.from(mock.vlans as Set<number>)
-            };
-        }
 
-        // Real devices over SSH, Telnet, Serial, etc.
         try {
             const state = session.getState();
             const prefix = (state.currentMode === 'GLOBAL_CONFIG' || state.currentMode === 'INTERFACE_CONFIG') ? 'do ' : '';
@@ -911,7 +889,7 @@ export class CiscoAgentLoop {
     private async handleEnableIosShellCall(call: ToolCall): Promise<void> {
         let args;
         try {
-            args = JSON.parse(call.function.arguments);
+            args = safeJsonParse(call.function.arguments);
         } catch (e) {
             this.injectToolResponse(call.id, 'enable_ios_shell', `Format Error: Invalid Tool Call arguments. Must be JSON.`);
             return;
@@ -950,7 +928,7 @@ export class CiscoAgentLoop {
     private async handleDefineShellVariableCall(call: ToolCall): Promise<void> {
         let args;
         try {
-            args = JSON.parse(call.function.arguments);
+            args = safeJsonParse(call.function.arguments);
         } catch (e) {
             this.injectToolResponse(call.id, 'define_shell_variable', `Format Error: Invalid Tool Call arguments. Must be JSON.`);
             return;
@@ -981,7 +959,7 @@ export class CiscoAgentLoop {
     private async handleExecuteShellLoopCall(call: ToolCall): Promise<void> {
         let args;
         try {
-            args = JSON.parse(call.function.arguments);
+            args = safeJsonParse(call.function.arguments);
         } catch (e) {
             this.injectToolResponse(call.id, 'execute_shell_loop', `Format Error: Invalid Tool Call arguments. Must be JSON.`);
             return;
@@ -1014,7 +992,7 @@ export class CiscoAgentLoop {
     private async handleDefineShellFunctionCall(call: ToolCall): Promise<void> {
         let args;
         try {
-            args = JSON.parse(call.function.arguments);
+            args = safeJsonParse(call.function.arguments);
         } catch (e) {
             this.injectToolResponse(call.id, 'define_shell_function', `Format Error: Invalid Tool Call arguments. Must be JSON.`);
             return;
@@ -1046,7 +1024,7 @@ export class CiscoAgentLoop {
     private async handlePingTestCall(call: ToolCall): Promise<void> {
         let args;
         try {
-            args = JSON.parse(call.function.arguments);
+            args = safeJsonParse(call.function.arguments);
         } catch (e) {
             this.injectToolResponse(call.id, 'ping_test', `Format Error: Invalid Tool Call arguments. Must be JSON.`);
             return;

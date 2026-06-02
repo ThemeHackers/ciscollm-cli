@@ -171,122 +171,114 @@ export class TransactionManager {
             }
         }
 
-        const snapshotCapableSession = session as BaseSession & {
-            hasSnapshots?: () => boolean;
-            restoreBackupSnapshot?: () => boolean;
-            restoreToInitialSnapshot?: () => boolean;
-        };
-
         let rollbackResult = '';
 
-        if (snapshotCapableSession.restoreBackupSnapshot?.()) {
-            console.log(chalk.green('[+] Mock backup restore completed successfully.'));
-            rollbackResult = 'Mock backup restore completed successfully.';
-            this.clear();
-        } else if (snapshotCapableSession.hasSnapshots?.() && snapshotCapableSession.restoreToInitialSnapshot?.()) {
-            console.log(chalk.green('[+] Mock snapshot restore completed successfully.'));
-            rollbackResult = 'Mock snapshot restore completed successfully.';
-            this.clear();
-        } else {
-            if (this.backupCreated) {
-                try {
-                    console.warn(chalk.cyan(`❯ Restoring running configuration atomically using ${this.backupFilename}...`));
-                    
-                    const state = session.getState();
-                    if (state.currentMode === 'USER_EXEC') {
-                        await session.execute('enable');
-                    } else if (state.currentMode === 'GLOBAL_CONFIG' || state.currentMode === 'INTERFACE_CONFIG') {
-                        await session.execute('end');
-                    }
-                    
-                    const restoreOutput = await session.execute(`configure replace ${this.backupFilename} force`);
-                    if (!restoreOutput.includes('% Invalid') && !restoreOutput.includes('Unrecognized')) {
-                        console.log(chalk.green('[+] Atomic restore completed successfully.'));
-                        rollbackResult = restoreOutput;
-                        this.clear();
-                    } else {
-                        console.warn(chalk.yellow('[!] configure replace failed/unsupported. Falling back to command inversion.'));
-                    }
-                } catch (err: any) {
-                    console.warn(chalk.yellow(`[!] Atomic replace failed: ${err.message}. Falling back to command inversion.`));
-                }
-            }
-
-            if (!rollbackResult) {
-                console.warn(chalk.cyan(`❯ Executing manual inversion for ${this.mutationsWithContext.length} mutations...`));
-                let rollbackSequence: string[] = ['configure terminal'];
-                let currentRollbackContext: string[] = [];
-
-                for (const item of [...this.mutationsWithContext].reverse()) {
-                    const targetStack = item.contextStack;
-
-                    let needsReentry = false;
-                    if (currentRollbackContext.length !== targetStack.length) {
-                        needsReentry = true;
-                    } else {
-                        for (let i = 0; i < targetStack.length; i++) {
-                            if (currentRollbackContext[i] !== targetStack[i]) {
-                                needsReentry = true;
-                                break;
-                            }
-                        }
-                    }
-
-                    if (needsReentry) {
-                        if (currentRollbackContext.length > 0) {
-                            rollbackSequence.push('exit');
-                        }
-                        for (const submode of targetStack) {
-                            rollbackSequence.push(submode);
-                        }
-                        currentRollbackContext = [...targetStack];
-                    }
-
-                    const clean = item.command;
-                    const lower = clean.toLowerCase();
-                    let inverseCmd = '';
-
-                    if (lower.startsWith('ip address') || lower.startsWith('ip add')) {
-                        inverseCmd = 'no ip address';
-                    } else if (lower.startsWith('shutdown')) {
-                        inverseCmd = 'no shutdown';
-                    } else if (lower.startsWith('no shutdown')) {
-                        inverseCmd = 'shutdown';
-                    } else if (lower.startsWith('description')) {
-                        inverseCmd = 'no description';
-                    } else if (lower.startsWith('no ')) {
-                        inverseCmd = clean.substring(3);
-                    } else {
-                        inverseCmd = `no ${clean}`;
-                    }
-
-                    rollbackSequence.push(inverseCmd);
+        if (this.backupCreated) {
+            try {
+                console.warn(chalk.cyan(`❯ Restoring running configuration atomically using ${this.backupFilename}...`));
+                
+                const state = session.getState();
+                if (state.currentMode === 'USER_EXEC') {
+                    await session.execute('enable');
+                } else if (state.currentMode === 'GLOBAL_CONFIG' || state.currentMode === 'INTERFACE_CONFIG') {
+                    await session.execute('end');
                 }
                 
-                rollbackSequence.push('end');
-
-                let summary = '';
-                for (const rollbackCmd of rollbackSequence) {
-                    console.log(chalk.gray(`❯ Rollback: Executing "${rollbackCmd}"`));
-                    summary += await session.execute(rollbackCmd);
+                const restoreOutput = await session.execute(`configure replace ${this.backupFilename} force`);
+                if (!restoreOutput.includes('% Invalid') && !restoreOutput.includes('Unrecognized')) {
+                    console.log(chalk.green('[+] Atomic restore completed successfully.'));
+                    rollbackResult = restoreOutput;
+                    this.clear();
+                } else {
+                    console.warn(chalk.yellow('[!] configure replace failed/unsupported. Falling back to command inversion.'));
                 }
-                rollbackResult = summary;
-                this.clear();
+            } catch (err: any) {
+                console.warn(chalk.yellow(`[!] Atomic replace failed: ${err.message}. Falling back to command inversion.`));
             }
+        }
+
+        if (!rollbackResult) {
+            console.warn(chalk.cyan(`❯ Executing manual inversion for ${this.mutationsWithContext.length} mutations...`));
+            let rollbackSequence: string[] = ['configure terminal'];
+            let currentRollbackContext: string[] = [];
+
+            for (const item of [...this.mutationsWithContext].reverse()) {
+                const targetStack = item.contextStack;
+
+                let needsReentry = false;
+                if (currentRollbackContext.length !== targetStack.length) {
+                    needsReentry = true;
+                } else {
+                    for (let i = 0; i < targetStack.length; i++) {
+                        if (currentRollbackContext[i] !== targetStack[i]) {
+                            needsReentry = true;
+                            break;
+                        }
+                    }
+                }
+
+                if (needsReentry) {
+                    if (currentRollbackContext.length > 0) {
+                        rollbackSequence.push('exit');
+                    }
+                    for (const submode of targetStack) {
+                        rollbackSequence.push(submode);
+                    }
+                    currentRollbackContext = [...targetStack];
+                }
+
+                const clean = item.command;
+                const lower = clean.toLowerCase();
+                let inverseCmd = '';
+
+                if (lower.startsWith('ip address') || lower.startsWith('ip add')) {
+                    inverseCmd = 'no ip address';
+                } else if (lower.startsWith('shutdown')) {
+                    inverseCmd = 'no shutdown';
+                } else if (lower.startsWith('no shutdown')) {
+                    inverseCmd = 'shutdown';
+                } else if (lower.startsWith('description')) {
+                    inverseCmd = 'no description';
+                } else if (lower.startsWith('no ')) {
+                    inverseCmd = clean.substring(3);
+                } else {
+                    inverseCmd = `no ${clean}`;
+                }
+
+                rollbackSequence.push(inverseCmd);
+            }
+            
+            rollbackSequence.push('end');
+
+            let summary = '';
+            for (const rollbackCmd of rollbackSequence) {
+                console.log(chalk.gray(`❯ Rollback: Executing "${rollbackCmd}"`));
+                summary += await session.execute(rollbackCmd);
+            }
+            rollbackResult = summary;
+            this.clear();
         }
 
       
         const isConfigMode = ['GLOBAL_CONFIG', 'INTERFACE_CONFIG', 'VLAN_CONFIG'].includes(modeBeforeRollback);
         if (isConfigMode) {
             console.log(chalk.cyan(`❯ Re-entering previous configuration context...`));
-            let currentState = session.getState();
-            if (currentState.currentMode === 'USER_EXEC') {
-                await session.execute('enable');
-            }
-            await session.execute('configure terminal');
-            for (const submode of savedContext) {
-                console.log(chalk.gray(`❯ Restoring context: Executing "${submode}"`));
-                await session.execute(submode);
+            try {
+                let currentState = session.getState();
+                if (currentState.currentMode === 'USER_EXEC') {
+                    await session.execute('enable');
+                }
+                await session.execute('configure terminal');
+                for (const submode of savedContext) {
+                    try {
+                        console.log(chalk.gray(`❯ Restoring context: Executing "${submode}"`));
+                        await session.execute(submode);
+                    } catch (restorationErr: any) {
+                        console.warn(chalk.yellow(`[!] Warning restoring submode context "${submode}": ${restorationErr.message}`));
+                    }
+                }
+            } catch (err: any) {
+                console.warn(chalk.yellow(`[!] Error re-entering config mode: ${err.message}`));
             }
         }
 

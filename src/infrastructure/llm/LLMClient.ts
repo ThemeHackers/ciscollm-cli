@@ -2,6 +2,7 @@ import axios from 'axios';
 import { StringDecoder } from 'string_decoder';
 import { CiscoAgentTools } from './ToolDefinitions';
 import { ChatMessage } from '../../shared/types';
+import chalk from 'chalk';
 
 export type LLMProvider = 'local' | 'cloud';
 
@@ -10,15 +11,18 @@ export class LLMClient {
     private endpoint: string;
     private modelName: string;
     private apiKey?: string;
+    private localType?: string;
 
     constructor(
         provider: LLMProvider = 'local',
         endpoint?: string,
         modelName?: string,
-        apiKey?: string
+        apiKey?: string,
+        localType?: string
     ) {
         this.provider = provider;
         this.apiKey = apiKey;
+        this.localType = localType?.toLowerCase().trim();
 
         if (this.provider === 'cloud') {
             this.endpoint = endpoint || 'https://openrouter.ai/api/v1';
@@ -406,39 +410,60 @@ export class LLMClient {
         const base = this.endpoint.replace(/\/$/, '');
         const probeUrls: string[] = [];
 
-
-        probeUrls.push(`${base}/models`);
-
-      
-        if (this.provider === 'local') {
+        if (this.localType === 'ollama' || base.includes('11434') || base.includes('ollama')) {
+            probeUrls.push(`${base}/models`);
             const withoutV1 = base.replace(/\/v1$/i, '');
             if (withoutV1 !== base) {
                 probeUrls.push(`${withoutV1}/api/tags`);
             }
-        }
-
-        const errors: string[] = [];
-        for (const url of probeUrls) {
-            try {
-                const response = await axios.get(url, { timeout: timeoutMs });
-                if (response.status >= 200 && response.status < 500) {
-                    return;
+        } else if (this.localType === 'lmstudio' || base.includes('1234') || base.includes('lmstudio')) {
+            probeUrls.push(`${base}/models`);
+        } else {
+            probeUrls.push(`${base}/models`);
+            if (this.provider === 'local') {
+                const withoutV1 = base.replace(/\/v1$/i, '');
+                if (withoutV1 !== base) {
+                    probeUrls.push(`${withoutV1}/api/tags`);
                 }
-                errors.push(`${url} -> HTTP ${response.status}`);
-            } catch (err: any) {
-                errors.push(`${url} -> ${err.message}`);
             }
         }
 
-        const guidance = this.provider === 'local'
-            ? [
-                'For Ollama: run "ollama serve" and ensure your model is pulled (e.g., "ollama pull qwen3.5:4b").',
-                'For LM Studio: start the local server and use --local-type lmstudio --endpoint http://127.0.0.1:1234/v1.'
-            ].join(' ')
-            : 'Check endpoint URL, API key, network, and provider availability.';
+        const maxRetries = 3;
+        const retryDelayMs = 1500;
+        const errors: string[] = [];
+
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+            errors.length = 0;
+            for (const url of probeUrls) {
+                try {
+                    const response = await axios.get(url, { timeout: timeoutMs });
+                    if (response.status >= 200 && response.status < 500) {
+                        return;
+                    }
+                    errors.push(`${url} -> HTTP ${response.status}`);
+                } catch (err: any) {
+                    errors.push(`${url} -> ${err.message}`);
+                }
+            }
+            if (attempt < maxRetries) {
+                console.warn(chalk.yellow(`❯ LLM endpoint preflight check failed. Retrying in ${retryDelayMs}ms (Attempt ${attempt}/${maxRetries})...`));
+                await new Promise(r => setTimeout(r, retryDelayMs));
+            }
+        }
+
+        let guidance = '';
+        if (this.provider === 'local') {
+            if (this.localType === 'lmstudio' || base.includes('1234')) {
+                guidance = 'Please start LM Studio, enable the Developer Preset / Local Server, and verify the port is set to 1234.';
+            } else {
+                guidance = 'Please run "ollama serve" in your terminal and verify the model is pulled (e.g., "ollama pull qwen3.5:4b" or the model specified in your config).';
+            }
+        } else {
+            guidance = 'Check your OpenRouter API key, endpoint URL, network connectivity, and service status.';
+        }
 
         throw new Error(
-            `LLM endpoint preflight failed for [${this.provider}] at "${this.endpoint}". ` +
+            `LLM endpoint preflight failed for [${this.provider}] (type: ${this.localType || 'generic'}) at "${this.endpoint}". ` +
             `Probes: ${errors.join(' | ')}. ${guidance}`
         );
     }

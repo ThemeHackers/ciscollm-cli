@@ -58,3 +58,29 @@ export function parseSimpleYaml(yaml: string): any {
     }
     return result;
 }
+
+export function safeJsonParse(jsonStr: string): any {
+    let clean = jsonStr.trim();
+    if (clean.startsWith('```json')) {
+        clean = clean.substring(7);
+    } else if (clean.startsWith('```')) {
+        clean = clean.substring(3);
+    }
+    if (clean.endsWith('```')) {
+        clean = clean.substring(0, clean.length - 3);
+    }
+    clean = clean.trim();
+
+    try {
+        return JSON.parse(clean);
+    } catch (e) {
+        try {
+            const repaired = clean
+                .replace(/,\s*([}\]])/g, '$1')
+                .replace(/[\x00-\x08\x0B-\x0C\x0E-\x1F\x7F]/g, '');
+            return JSON.parse(repaired);
+        } catch (innerErr: any) {
+            throw new Error(`JSON Parse Error: ${innerErr.message} on raw text: "${jsonStr}"`);
+        }
+    }
+}

@@ -27,6 +27,7 @@ export class TelnetSession extends BaseSession {
             
             this.socket = net.createConnection({ host: this.config.host, port }, () => {
                 console.log(chalk.green(`[+] TCP socket connection established.`));
+                this.socket?.setKeepAlive(true, 10000);
             });
 
             this.socket.on('data', (data: Buffer) => this.handleRawData(data));
@@ -59,6 +60,8 @@ export class TelnetSession extends BaseSession {
                     
                     const paginationCommands = [
                         'terminal length 0',
+                        'terminal width 0',
+                        'terminal width 511',
                         'screen-length 0 temporary',
                         'set cli screen-length 0'
                     ];
@@ -167,8 +170,13 @@ export class TelnetSession extends BaseSession {
         return new Promise((resolve, reject) => {
             const commandStartIndex = this.buffer.length;
             
-            const timeout = setTimeout(() => {
+            const timeout = setTimeout(async () => {
                 this.eventEmitter.removeAllListeners('stream_updated');
+                try {
+                    sock.write('\r\n');
+                    await new Promise(r => setTimeout(r, 500));
+                    this.buffer = '';
+                } catch {}
                 reject(new Error(`Telnet command execution timed out after ${timeoutMs}ms: "${command}"`));
             }, timeoutMs);
 
