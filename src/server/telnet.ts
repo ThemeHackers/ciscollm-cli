@@ -36,6 +36,18 @@ export function startTelnetServer(port: number, onLog: (msg: string) => void): n
 
                 const welcomeBanner = `\r\nCisco IOS Software, C2960 Software (C2960-LANBASEK9-M), Version 15.0(2)SE4, RELEASE SOFTWARE (fc1)\r\nTechnical Support: http://www.cisco.com/techsupport\r\nCopyright (c) 1986-2013 by Cisco Systems, Inc.\r\nCompiled Wed 26-Jun-13 02:49 by prod_rel_team\r\n\r\n`;
                 socket.write(welcomeBanner + simulator.getPrompt());
+
+                const sysLogListener = (msg: string) => {
+                    try {
+                        socket.write(`\r\n${msg}\r\n` + simulator.getPrompt());
+                    } catch {}
+                };
+                const { simulatorEvents } = require('./shell-simulator');
+                simulatorEvents.on('syslog', sysLogListener);
+
+                socket.on('close', () => {
+                    simulatorEvents.removeListener('syslog', sysLogListener);
+                });
             } else {
 
                 if (cmd.toLowerCase() === 'exit' && simulator.mode === 'USER_EXEC') {

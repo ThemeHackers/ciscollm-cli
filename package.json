@@ -26,6 +26,8 @@
     "start": "ts-node src/index.ts",
     "server": "ts-node src/server/index.ts",
     "test": "ts-node test/index.test.ts",
+    "test:healing": "ts-node test/auto_healing.test.ts",
+    "test:plink": "ts-node test/plink_downloader.test.ts",
     "prepack": "npm run build"
   },
   "publishConfig": {

@@ -1,17 +1,18 @@
 import { SessionState } from '../../shared/types';
 
 export abstract class BaseSession {
+    public deviceId: string = '';
     protected state: SessionState = { currentMode: 'UNKNOWN', hostname: 'Router', prompt: '>' };
-    private notificationCallbacks: ((msg: string) => void)[] = [];
+    private notificationCallbacks: ((msg: string, deviceId: string) => void)[] = [];
 
-    public onNotification(callback: (msg: string) => void): void {
+    public onNotification(callback: (msg: string, deviceId: string) => void): void {
         this.notificationCallbacks.push(callback);
     }
 
     protected emitNotification(msg: string): void {
         for (const cb of this.notificationCallbacks) {
             try {
-                cb(msg);
+                cb(msg, this.deviceId);
             } catch (e) {
                 console.error('Error in notification callback:', e);
             }

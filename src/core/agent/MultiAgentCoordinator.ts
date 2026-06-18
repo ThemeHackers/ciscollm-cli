@@ -2,8 +2,9 @@ import { BaseSession } from '../../infrastructure/protocols/BaseSession';
 import { NetworkTopology, SessionState, TopologyLink } from '../../shared/types';
 import { TopologyDiscovery } from '../topology/TopologyDiscovery';
 import chalk from 'chalk';
+import { EventEmitter } from 'events';
 
-export class MultiAgentCoordinator {
+export class MultiAgentCoordinator extends EventEmitter {
     private sessions: Map<string, BaseSession> = new Map();
     private topology: NetworkTopology = {
         discoveredAt: new Date(0).toISOString(),
@@ -11,8 +12,18 @@ export class MultiAgentCoordinator {
         links: []
     };
 
+    constructor() {
+        super();
+    }
+
     public registerSession(deviceId: string, session: BaseSession): void {
+        session.deviceId = deviceId;
         this.sessions.set(deviceId, session);
+        if (typeof session.onNotification === 'function') {
+            session.onNotification((msg, devId) => {
+                this.emit('notification', msg, devId);
+            });
+        }
     }
 
     public async connectAll(): Promise<void> {

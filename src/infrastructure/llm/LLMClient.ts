@@ -513,7 +513,6 @@ export class LLMClient {
                 }
             }
         } catch (err) {
-            // Graceful ignore
         }
     }
 

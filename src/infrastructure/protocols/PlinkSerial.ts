@@ -18,26 +18,82 @@ export class PlinkSerialSession extends BaseSession {
         super();
     }
 
+    public static async ensurePlinkExecutable(): Promise<string> {
+        const isWindows = process.platform === 'win32';
+        if (!isWindows) {
+            return 'plink';
+        }
+
+        const localCwdPath = path.resolve(process.cwd(), 'plink.exe');
+        const projectRootPath = path.resolve(__dirname, '..', '..', '..', 'plink.exe');
+        const nextToExecPath = path.resolve(__dirname, 'plink.exe');
+
+        let cmdPath = 'plink.exe';
+        if (fs.existsSync(localCwdPath)) {
+            cmdPath = localCwdPath;
+        } else if (fs.existsSync(projectRootPath)) {
+            cmdPath = projectRootPath;
+        } else if (fs.existsSync(nextToExecPath)) {
+            cmdPath = nextToExecPath;
+        } else {
+            const arch = process.arch;
+            let downloadUrl = 'https://the.earth.li/~sgtatham/putty/latest/w64/plink.exe';
+            
+            if (arch === 'arm64') {
+                downloadUrl = 'https://the.earth.li/~sgtatham/putty/latest/wa64/plink.exe';
+            } else if (arch === 'ia32') {
+                downloadUrl = 'https://the.earth.li/~sgtatham/putty/latest/w32/plink.exe';
+            }
+
+            const targetPath = projectRootPath;
+            const { createSpinner } = require('../../cli/ui/ui');
+            const spinner = createSpinner(`[Plink Installer] plink.exe not found. Downloading PuTTY plink.exe for ${arch} architecture...`).start();
+
+            try {
+                const axios = require('axios');
+                const writer = fs.createWriteStream(targetPath);
+                const response = await axios({
+                    url: downloadUrl,
+                    method: 'GET',
+                    responseType: 'stream'
+                });
+                response.data.pipe(writer);
+                await new Promise<void>((resolveWrite, rejectWrite) => {
+                    writer.on('finish', () => resolveWrite());
+                    writer.on('error', (err) => rejectWrite(err));
+                });
+                spinner.succeed(`[Plink Installer] plink.exe successfully downloaded to ${targetPath}`);
+                cmdPath = targetPath;
+            } catch (err: any) {
+                spinner.fail(`[Plink Installer] Failed to download plink.exe: ${err.message}`);
+                throw new Error(`Failed to download required PuTTY plink.exe serial interface: ${err.message}`);
+            }
+        }
+
+        try {
+            const { execSync } = require('child_process');
+            const stdout = execSync(`"${cmdPath}" -V`, { encoding: 'utf8', stdio: 'pipe' });
+            console.log(chalk.cyan(`[Plink Version Check] Verified plink.exe: ${stdout.trim().split(/\r?\n/)[0]}`));
+        } catch (err: any) {
+            throw new Error(`plink.exe exists at ${cmdPath} but failed to run or verify version: ${err.message}`);
+        }
+
+        return cmdPath;
+    }
+
     public async connect(): Promise<void> {
-        return new Promise((resolve, reject) => {
+        return new Promise(async (resolve, reject) => {
             let cmd: string;
             let args: string[];
 
             const isWindows = process.platform === 'win32';
             if (isWindows) {
-                cmd = 'plink.exe';
                 args = ['-batch', '-serial', this.comPort, '-sercfg', `${this.baudRate},8,n,1,N`];
-                
-                const localCwdPath = path.resolve(process.cwd(), 'plink.exe');
-                const projectRootPath = path.resolve(__dirname, '..', '..', '..', 'plink.exe');
-                const nextToExecPath = path.resolve(__dirname, 'plink.exe');
-
-                if (fs.existsSync(localCwdPath)) {
-                    cmd = localCwdPath;
-                } else if (fs.existsSync(projectRootPath)) {
-                    cmd = projectRootPath;
-                } else if (fs.existsSync(nextToExecPath)) {
-                    cmd = nextToExecPath;
+                try {
+                    cmd = await PlinkSerialSession.ensurePlinkExecutable();
+                } catch (err: any) {
+                    reject(err);
+                    return;
                 }
             } else {
                 const isCommandAvailable = (commandName: string): boolean => {

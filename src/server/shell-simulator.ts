@@ -1,4 +1,7 @@
 import { PROMPT_REGEX } from '../shared/constants';
+import { EventEmitter } from 'events';
+
+export const simulatorEvents = new EventEmitter();
 
 export type CliMode = 'USER_EXEC' | 'PRIVILEGED_EXEC' | 'GLOBAL_CONFIG' | 'INTERFACE_CONFIG' | 'OSPF_CONFIG' | 'DHCP_CONFIG' | 'ACL_CONFIG' | 'VLAN_CONFIG';
 
@@ -749,6 +752,12 @@ Total entries displayed: 1
 !!!!!
 Success rate is 100 percent (5/5), round-trip min/avg/max = 1/1/4 ms
 `;
+        }
+
+        if (cmd === 'test' && args[1] === 'trigger-syslog') {
+            const msgText = args.slice(2).join(' ');
+            simulatorEvents.emit('syslog', msgText);
+            return `[Simulator Test] Triggered syslog: ${msgText}`;
         }
 
 
