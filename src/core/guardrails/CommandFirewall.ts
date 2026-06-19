@@ -6,17 +6,20 @@ import { DESTRUCTIVE_TOKENS, DEFAULT_PROTECTED_INTERFACES } from '../../shared/c
 import { parseSimpleYaml } from '../../shared/utils';
 
 export class CommandFirewall {
-    private protectedInterfaces: string[];
+    private protectedInterfaces: string[] = [];
     private playbook: any = null;
 
-    constructor(protectedInterfaces: string[] = DEFAULT_PROTECTED_INTERFACES) {
-        this.protectedInterfaces = protectedInterfaces.map(i => i.toLowerCase().trim());
+    constructor(protectedInterfaces?: string[]) {
+        if (protectedInterfaces) {
+            this.protectedInterfaces = protectedInterfaces.map(i => i.toLowerCase().trim());
+            this.playbook = { protectedInterfaces };
+        }
         
         try {
             const yamlPath = join(process.cwd(), '.ciscollm-guard.yaml');
             if (existsSync(yamlPath)) {
                 const content = readFileSync(yamlPath, 'utf8');
-                this.playbook = parseSimpleYaml(content);
+                this.playbook = parseSimpleYaml(content) || {};
                 console.log(chalk.green(`[+] Loaded custom safety playbook from .ciscollm-guard.yaml`));
                 
                 if (this.playbook && Array.isArray(this.playbook.protectedInterfaces)) {
@@ -27,6 +30,8 @@ export class CommandFirewall {
                         }
                     });
                 }
+            } else if (!protectedInterfaces) {
+                this.playbook = null;
             }
         } catch (e: any) {
             console.warn(chalk.yellow(`[!] Warning loading safety playbook: ${e.message}`));
@@ -117,6 +122,10 @@ export class CommandFirewall {
     }
 
     public checkCommand(command: string, currentInterfaceContext: string | null): { dangerous: boolean; reason?: string } {
+        if (!this.playbook) {
+            return { dangerous: false };
+        }
+
         const normalizedCommand = CommandFirewall.normalizeCiscoCommand(command);
         const normalized = normalizedCommand.toLowerCase().trim();
 

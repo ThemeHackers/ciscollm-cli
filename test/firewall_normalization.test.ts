@@ -21,7 +21,7 @@ function testFirewallCheck() {
     console.log('Testing Firewall Block with Abbreviated Commands...');
 
     
-    const firewall = new CommandFirewall();
+    const firewall = new CommandFirewall(['GigabitEthernet0/1']);
 
     
     const r1 = firewall.checkCommand('shut', 'GigabitEthernet0/1');
