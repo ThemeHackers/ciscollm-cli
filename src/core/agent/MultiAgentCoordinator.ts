@@ -11,6 +11,20 @@ export class MultiAgentCoordinator extends EventEmitter {
         nodes: [],
         links: []
     };
+    private auditHistory: Array<{ deviceId: string; pre: any; post: any; timestamp: string }> = [];
+
+    public recordAudit(deviceId: string, pre: any, post: any): void {
+        this.auditHistory.push({
+            deviceId,
+            pre,
+            post,
+            timestamp: new Date().toISOString()
+        });
+    }
+
+    public getAuditHistory(): any[] {
+        return this.auditHistory;
+    }
 
     constructor() {
         super();

@@ -3,7 +3,7 @@ import { EventEmitter } from 'events';
 
 export const simulatorEvents = new EventEmitter();
 
-export type CliMode = 'USER_EXEC' | 'PRIVILEGED_EXEC' | 'GLOBAL_CONFIG' | 'INTERFACE_CONFIG' | 'OSPF_CONFIG' | 'DHCP_CONFIG' | 'ACL_CONFIG' | 'VLAN_CONFIG';
+export type CliMode = 'USER_EXEC' | 'PRIVILEGED_EXEC' | 'GLOBAL_CONFIG' | 'INTERFACE_CONFIG' | 'OSPF_CONFIG' | 'RIP_CONFIG' | 'BGP_CONFIG' | 'EIGRP_CONFIG' | 'DHCP_CONFIG' | 'ACL_CONFIG' | 'VLAN_CONFIG';
 
 export interface InterfaceState {
     name: string;
@@ -15,6 +15,7 @@ export interface InterfaceState {
     isSwitchport?: boolean;
     switchportMode?: 'access' | 'trunk';
     vlan?: number;
+    natType?: 'inside' | 'outside';
 }
 
 export interface RouteState {
@@ -78,6 +79,24 @@ export class ShellSimulator {
 
     public ospfEnabled: boolean = false;
     public ospfProcessId: string | null = null;
+    public ripEnabled: boolean = false;
+    public ripVersion: number = 2;
+    public ripAutoSummary: boolean = false;
+    public bgpEnabled: boolean = false;
+    public bgpAsn: string | null = null;
+    public eigrpEnabled: boolean = false;
+    public eigrpAsn: string | null = null;
+    public vtpMode: string = 'server';
+    public vtpDomain: string | null = null;
+    public vtpPassword: string | null = null;
+    public hsrpGroups: Map<string, { virtualIp: string; priority: number; preempt: boolean }> = new Map();
+    public vrrpGroups: Map<string, { virtualIp: string; priority: number }> = new Map();
+    public ntpServers: string[] = [];
+    public snmpCommunities: string[] = [];
+    public natInsideInterfaces: Set<string> = new Set();
+    public natOutsideInterfaces: Set<string> = new Set();
+    public natRules: string[] = [];
+    public acls: Map<string, string[]> = new Map();
     public ipRoutingEnabled: boolean = true;
     public flashFiles: Set<string> = new Set(['c2960-lanbasek9-mz.150-2.SE4.bin']);
     private pendingCopyDest: string | null = null;
@@ -133,6 +152,9 @@ export class ShellSimulator {
             case 'INTERFACE_CONFIG':
                 return `${this.hostname}(config-if)# `;
             case 'OSPF_CONFIG':
+            case 'RIP_CONFIG':
+            case 'BGP_CONFIG':
+            case 'EIGRP_CONFIG':
                 return `${this.hostname}(config-router)# `;
             case 'DHCP_CONFIG':
                 return `${this.hostname}(config-dhcp)# `;
@@ -251,7 +273,7 @@ show the available options.`;
 
 
         if (cmd === 'exit') {
-            if (this.mode === 'INTERFACE_CONFIG' || this.mode === 'OSPF_CONFIG' || this.mode === 'DHCP_CONFIG' || this.mode === 'ACL_CONFIG' || this.mode === 'VLAN_CONFIG') {
+            if (this.mode === 'INTERFACE_CONFIG' || this.mode === 'OSPF_CONFIG' || this.mode === 'RIP_CONFIG' || this.mode === 'BGP_CONFIG' || this.mode === 'EIGRP_CONFIG' || this.mode === 'DHCP_CONFIG' || this.mode === 'ACL_CONFIG' || this.mode === 'VLAN_CONFIG') {
                 this.mode = 'GLOBAL_CONFIG';
                 this.activeInterface = null;
                 this.activeVlan = null;
@@ -411,6 +433,92 @@ show the available options.`;
                 return '';
             }
 
+            if (cmd === 'router' && args[1] === 'rip') {
+                this.mode = 'RIP_CONFIG';
+                this.ripEnabled = true;
+                return '';
+            }
+
+            if (cmd === 'no' && args[1] === 'router' && args[2] === 'rip') {
+                this.ripEnabled = false;
+                return '';
+            }
+
+            if (cmd === 'router' && args[1] === 'bgp') {
+                this.mode = 'BGP_CONFIG';
+                this.bgpAsn = args[2] || null;
+                this.bgpEnabled = true;
+                return '';
+            }
+
+            if (cmd === 'no' && args[1] === 'router' && args[2] === 'bgp') {
+                this.bgpEnabled = false;
+                this.bgpAsn = null;
+                return '';
+            }
+
+            if (cmd === 'spanning-tree' && args[1]) {
+                return '';
+            }
+
+            if (cmd === 'router' && args[1] === 'eigrp') {
+                this.mode = 'EIGRP_CONFIG';
+                this.eigrpAsn = args[2] || null;
+                this.eigrpEnabled = true;
+                return '';
+            }
+
+            if (cmd === 'no' && args[1] === 'router' && args[2] === 'eigrp') {
+                this.eigrpEnabled = false;
+                this.eigrpAsn = null;
+                return '';
+            }
+
+            if (cmd === 'vtp' && args[1]) {
+                if (args[1] === 'mode' && args[2]) {
+                    this.vtpMode = args[2].toLowerCase();
+                } else if (args[1] === 'domain' && args[2]) {
+                    this.vtpDomain = args[2];
+                } else if (args[1] === 'password' && args[2]) {
+                    this.vtpPassword = args[2];
+                }
+                return '';
+            }
+
+            if (cmd === 'ntp' && args[1] === 'server' && args[2]) {
+                if (!this.ntpServers.includes(args[2])) {
+                    this.ntpServers.push(args[2]);
+                }
+                return '';
+            }
+
+            if (cmd === 'snmp-server' && args[1] === 'community' && args[2]) {
+                if (!this.snmpCommunities.includes(args[2])) {
+                    this.snmpCommunities.push(args[2]);
+                }
+                return '';
+            }
+
+            if (cmd === 'ip' && args[1] === 'nat' && args[2] === 'inside' && args[3] === 'source') {
+                this.natRules.push(args.slice(2).join(' '));
+                return '';
+            }
+
+            if (cmd === 'access-list' && args[1] && args[2]) {
+                const aclId = args[1];
+                const rule = args.slice(2).join(' ');
+                if (!this.acls.has(aclId)) {
+                    this.acls.set(aclId, []);
+                }
+                this.acls.get(aclId)!.push(rule);
+                return '';
+            }
+
+            if (cmd === 'ip' && args[1] === 'access-list' && (args[2] === 'standard' || args[2] === 'extended') && args[3]) {
+                this.mode = 'ACL_CONFIG';
+                return '';
+            }
+
 
             if (cmd === 'ip' && args[1] === 'dhcp' && args[2] === 'pool' && args[3]) {
                 this.mode = 'DHCP_CONFIG';
@@ -535,12 +643,123 @@ show the available options.`;
                 return '';
             }
 
+            if (cmd === 'switchport' && args[1] === 'mode' && args[2] === 'trunk') {
+                iface.switchportMode = 'trunk';
+                iface.isSwitchport = true;
+                return '';
+            }
+
+            if (cmd === 'switchport' && args[1] === 'trunk' && args[2] === 'allowed' && args[3] === 'vlan') {
+                return '';
+            }
+
+            if (cmd === 'channel-group' && args[1] && args[2] === 'mode' && args[3]) {
+                return '';
+            }
+
+            if (cmd === 'standby' && args[1]) {
+                const group = args[1];
+                if (!this.hsrpGroups.has(group)) {
+                    this.hsrpGroups.set(group, { virtualIp: '', priority: 100, preempt: false });
+                }
+                const hsrp = this.hsrpGroups.get(group)!;
+                if (args[2] === 'ip' && args[3]) {
+                    hsrp.virtualIp = args[3];
+                } else if (args[2] === 'priority' && args[3]) {
+                    hsrp.priority = parseInt(args[3], 10);
+                } else if (args[2] === 'preempt') {
+                    hsrp.preempt = true;
+                }
+                return '';
+            }
+
+            if (cmd === 'vrrp' && args[1]) {
+                const group = args[1];
+                if (!this.vrrpGroups.has(group)) {
+                    this.vrrpGroups.set(group, { virtualIp: '', priority: 100 });
+                }
+                const vrrp = this.vrrpGroups.get(group)!;
+                if (args[2] === 'ip' && args[3]) {
+                    vrrp.virtualIp = args[3];
+                } else if (args[2] === 'priority' && args[3]) {
+                    vrrp.priority = parseInt(args[3], 10);
+                }
+                return '';
+            }
+
+            if (cmd === 'ip' && args[1] === 'nat' && (args[2] === 'inside' || args[2] === 'outside')) {
+                iface.natType = args[2] as 'inside' | 'outside';
+                if (args[2] === 'inside') {
+                    this.natInsideInterfaces.add(this.activeInterface!);
+                } else {
+                    this.natOutsideInterfaces.add(this.activeInterface!);
+                }
+                return '';
+            }
+
 
             return `% Invalid input detected at '^' marker.`;
         }
 
         if (this.mode === 'OSPF_CONFIG') {
             if (cmd === 'network' || cmd === 'router-id') {
+                return '';
+            }
+            if (cmd === 'passive-interface' || (cmd === 'no' && args[1] === 'passive-interface')) {
+                return '';
+            }
+            return `% Invalid input detected at '^' marker.`;
+        }
+
+        if (this.mode === 'RIP_CONFIG') {
+            if (cmd === 'version' && (args[1] === '1' || args[1] === '2')) {
+                this.ripVersion = parseInt(args[1], 10);
+                return '';
+            }
+            if (cmd === 'no' && args[1] === 'auto-summary') {
+                this.ripAutoSummary = false;
+                return '';
+            }
+            if (cmd === 'auto-summary') {
+                this.ripAutoSummary = true;
+                return '';
+            }
+            if (cmd === 'network' && args[1]) {
+                return '';
+            }
+            if (cmd === 'passive-interface' || (cmd === 'no' && args[1] === 'passive-interface')) {
+                return '';
+            }
+            return `% Invalid input detected at '^' marker.`;
+        }
+
+        if (this.mode === 'BGP_CONFIG') {
+            if (cmd === 'neighbor' && args[1]) {
+                return '';
+            }
+            if (cmd === 'no' && args[1] === 'neighbor' && args[2]) {
+                return '';
+            }
+            if (cmd === 'network' && args[1]) {
+                return '';
+            }
+            if (cmd === 'no' && args[1] === 'auto-summary') {
+                return '';
+            }
+            if (cmd === 'auto-summary') {
+                return '';
+            }
+            return `% Invalid input detected at '^' marker.`;
+        }
+
+        if (this.mode === 'EIGRP_CONFIG') {
+            if (cmd === 'network' && args[1]) {
+                return '';
+            }
+            if (cmd === 'no' && args[1] === 'auto-summary') {
+                return '';
+            }
+            if (cmd === 'auto-summary') {
                 return '';
             }
             if (cmd === 'passive-interface' || (cmd === 'no' && args[1] === 'passive-interface')) {
@@ -624,6 +843,71 @@ This product contains cryptographic features and is subject to Y...
                 return out;
             }
 
+            if (showCmd === 'ip' && showArgs[1] === 'protocols') {
+                let out = '';
+                if (this.ospfEnabled) {
+                    out += `Routing Protocol is "ospf ${this.ospfProcessId || '10'}"\n` +
+                           `  Outgoing update filter list for all interfaces is not set\n` +
+                           `  Incoming update filter list for all interfaces is not set\n` +
+                           `  Router ID 192.168.1.254\n` +
+                           `  Number of areas in this router is 1. 1 normal 0 stub 0 nssa\n` +
+                           `  Routing for Networks:\n` +
+                           `    192.168.1.0/24 area 0\n` +
+                           `  Routing Information Sources:\n` +
+                           `    Gateway         Distance      Last Update\n` +
+                           `  Distance: (default is 110)\n\n`;
+                }
+                if (this.ripEnabled) {
+                    out += `Routing Protocol is "rip"\n` +
+                           `  Sending updates every 30 seconds, next due in 15 seconds\n` +
+                           `  Invalid 180 seconds, hold down 180, flushed 240\n` +
+                           `  Outgoing update filter list for all interfaces is not set\n` +
+                           `  Incoming update filter list for all interfaces is not set\n` +
+                           `  Redistributing: rip\n` +
+                           `  Default version control: send version ${this.ripVersion}, receive version ${this.ripVersion}\n` +
+                           `    Interface             Send  Recv  Triggered RIP  Key-chain\n`;
+                    for (const name of this.interfaces.keys()) {
+                        out += `    ${name.padEnd(21)} ${this.ripVersion}     ${this.ripVersion}\n`;
+                    }
+                    out += `  Automatic network summarization is ${this.ripAutoSummary ? 'in effect' : 'not in effect'}\n` +
+                           `  Maximum path: 4\n` +
+                           `  Routing for Networks:\n` +
+                           `    192.168.1.0\n` +
+                           `  Routing Information Sources:\n` +
+                           `    Gateway         Distance      Last Update\n` +
+                           `  Distance: (default is 120)\n\n`;
+                }
+                if (this.bgpEnabled) {
+                    out += `Routing Protocol is "bgp ${this.bgpAsn || '65000'}"\n` +
+                           `  Outgoing update filter list for all interfaces is not set\n` +
+                           `  Incoming update filter list for all interfaces is not set\n` +
+                           `  IGP synchronization is disabled\n` +
+                           `  Automatic route summarization is disabled\n` +
+                           `  Routing Information Sources:\n` +
+                           `    Gateway         Distance      Last Update\n` +
+                           `  Distance: external 20 internal 200 local 200\n\n`;
+                }
+                if (this.eigrpEnabled) {
+                    out += `Routing Protocol is "eigrp ${this.eigrpAsn || '100'}"\n` +
+                           `  Outgoing update filter list for all interfaces is not set\n` +
+                           `  Incoming update filter list for all interfaces is not set\n` +
+                           `  Default networks being advertised:\n` +
+                           `    192.168.1.0\n` +
+                           `  EIGRP-IPv4 Protocol for AS(${this.eigrpAsn || '100'})\n` +
+                           `    Metric weight K1=1, K2=0, K3=1, K4=0, K5=0\n` +
+                           `    NSF-aware route hold timer is 240s\n` +
+                           `    Router-ID: 192.168.1.254\n` +
+                           `    Topology Kisspoint limit: 100\n` +
+                           `    Routing Information Sources:\n` +
+                           `      Gateway         Distance      Last Update\n` +
+                           `    Distance: internal 90 external 170\n\n`;
+                }
+                if (!out) {
+                    out = '*** No routing protocols configured ***\n';
+                }
+                return out;
+            }
+
             if (showCmd === 'ip' && showArgs[1]?.startsWith('ro')) {
                 if (!this.ipRoutingEnabled) {
                     return '% IP routing table is not enabled';
@@ -687,6 +971,74 @@ This product contains cryptographic features and is subject to Y...
 Device ID        Local Intrfce     Holdtme    Capability  Platform  Port ID
 Switch2          Gig 0/1           125              S I   WS-C2960- Gig 0/1
 `;
+            }
+
+            if (showCmd === 'vtp' && showArgs[1] === 'status') {
+                return `VTP Version capability             : 1 to 3\n` +
+                       `VTP version running                : 1\n` +
+                       `VTP Operating Mode                 : ${this.vtpMode}\n` +
+                       `VTP Domain Name                    : ${this.vtpDomain || ''}\n` +
+                       `VTP Pruning Mode                   : Disabled\n` +
+                       `VTP V2 Mode                        : Disabled\n` +
+                       `VTP Traps Generation               : Disabled\n` +
+                       `MD5 digest                         : 0x94 0xC2 0x6E 0x93 0xA3 0xE2 0xD4 0xFA \n` +
+                       `Configuration last modified by 0.0.0.0 at 0-0-00 00:00:00\n`;
+            }
+
+            if (showCmd === 'standby' && (showArgs[1] === 'brief' || !showArgs[1])) {
+                let out = '                     Preempt State   Active          Standby         Virtual IP\n';
+                for (const [group, hsrp] of this.hsrpGroups.entries()) {
+                    out += `Gi0/1      ${group.padEnd(6)} ${hsrp.priority.toString().padEnd(4)} ${hsrp.preempt ? 'P' : ' '}  Active  local           unknown         ${hsrp.virtualIp}\n`;
+                }
+                if (this.hsrpGroups.size === 0) {
+                    out = '*** No HSRP standby groups configured ***\n';
+                }
+                return out;
+            }
+
+            if (showCmd === 'vrrp' && (showArgs[1] === 'brief' || !showArgs[1])) {
+                let out = 'Interface   Grp  Fip Pri Time  Own Pre State   Master addr     Group addr\n';
+                for (const [group, vrrp] of this.vrrpGroups.entries()) {
+                    out += `Gi0/1       ${group.padEnd(4)} 1   ${vrrp.priority.toString().padEnd(3)} 3.609 N   Y   Master  local           ${vrrp.virtualIp}\n`;
+                }
+                if (this.vrrpGroups.size === 0) {
+                    out = '*** No VRRP groups configured ***\n';
+                }
+                return out;
+            }
+
+            if (showCmd === 'ip' && showArgs[1] === 'nat' && showArgs[2] === 'translations') {
+                let out = 'Pro Inside global      Inside local       Outside local      Outside global\n';
+                for (const rule of this.natRules) {
+                    out += `tcp 192.0.2.1:80       192.168.1.10:80    ---                ---\n`;
+                }
+                if (this.natRules.length === 0) {
+                    out = '*** No NAT translations active ***\n';
+                }
+                return out;
+            }
+
+            if (showCmd === 'access-lists') {
+                let out = '';
+                for (const [aclId, rules] of this.acls.entries()) {
+                    out += `Standard IP access list ${aclId}\n`;
+                    rules.forEach((rule, idx) => {
+                        out += `    ${(idx + 1) * 10} ${rule}\n`;
+                    });
+                }
+                if (this.acls.size === 0) {
+                    out = '*** No access lists configured ***\n';
+                }
+                return out;
+            }
+
+            if (showCmd === 'ntp' && (showArgs[1] === 'status' || showArgs[1] === 'associations')) {
+                if (this.ntpServers.length === 0) {
+                    return 'NTP is not enabled.\n';
+                }
+                let out = 'Clock is synchronized, stratum 2, reference is ' + this.ntpServers[0] + '\n';
+                out += 'nominal freq is 250.0000 Hz, actual freq is 250.0000 Hz, precision is 2**24\n';
+                return out;
             }
 
             if (showCmd === 'lldp' && showArgs[1]?.startsWith('ne')) {

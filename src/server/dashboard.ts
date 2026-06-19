@@ -13,7 +13,7 @@ export function startDashboardServer(coordinator: MultiAgentCoordinator, port: n
         } catch {}
     }
 
-    const server = http.createServer((req, res) => {
+    const server = http.createServer(async (req, res) => {
         const url = req.url || '';
         const method = req.method || 'GET';
 
@@ -30,6 +30,18 @@ export function startDashboardServer(coordinator: MultiAgentCoordinator, port: n
         if (method === 'GET' && url === '/') {
             res.writeHead(200, { 'Content-Type': 'text/html' });
             res.end(getHtmlContent(port));
+            return;
+        }
+
+        if (method === 'GET' && url === '/api/state') {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({
+                topology: coordinator.getTopology(),
+                sessions: coordinator.getAllStates(),
+                logs: AuditLogger.getEntries(),
+                diffs: StateDiff.getDiffHistory(),
+                audits: (coordinator as any).getAuditHistory ? (coordinator as any).getAuditHistory() : []
+            }));
             return;
         }
 
@@ -57,17 +69,36 @@ export function startDashboardServer(coordinator: MultiAgentCoordinator, port: n
             return;
         }
 
+        if (method === 'GET' && url === '/api/audits') {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify((coordinator as any).getAuditHistory ? (coordinator as any).getAuditHistory() : []));
+            return;
+        }
+
         if (method === 'POST' && url === '/api/rollback') {
             const sessions = coordinator.getSessions();
+            const promises = Array.from(sessions.entries()).map(async ([id, session]) => {
+                await session.execute('configure replace flash:backup-agent.cfg force');
+            });
+
             let count = 0;
-            for (const [id, session] of sessions.entries()) {
-                try {
-                    session.execute('configure replace flash:backup-agent.cfg force');
+            let errorMessage = '';
+
+            const results = await Promise.allSettled(promises);
+            results.forEach((res, idx) => {
+                if (res.status === 'fulfilled') {
                     count++;
-                } catch {}
-            }
+                } else {
+                    const devId = Array.from(sessions.keys())[idx];
+                    errorMessage += `${devId}: ${res.reason?.message || res.reason}; `;
+                }
+            });
+
             res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ status: 'success', message: `Triggered configuration replace on ${count} devices.` }));
+            res.end(JSON.stringify({ 
+                status: count > 0 ? 'success' : 'failed', 
+                message: `Rollback completed on ${count} of ${sessions.size} devices.${errorMessage ? ` Errors: ${errorMessage}` : ''}` 
+            }));
             return;
         }
 
@@ -549,6 +580,71 @@ function getHtmlContent(port: number): string {
             border-bottom: none;
         }
 
+        /* Connection Status Overlay */
+        .disconnect-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            background: rgba(7, 10, 18, 0.9);
+            backdrop-filter: blur(8px);
+            z-index: 1000;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.4s ease;
+        }
+
+        .disconnect-overlay.visible {
+            opacity: 1;
+            pointer-events: auto;
+        }
+
+        .disconnect-box {
+            background: rgba(17, 24, 39, 0.85);
+            border: 1px solid var(--danger);
+            border-radius: 1rem;
+            padding: 2.5rem;
+            text-align: center;
+            box-shadow: 0 0 30px rgba(239, 68, 68, 0.15);
+            max-width: 450px;
+            width: 90%;
+            animation: slideIn 0.3s ease-out;
+        }
+
+        .disconnect-title {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: var(--danger);
+            margin-bottom: 1rem;
+        }
+
+        .disconnect-text {
+            color: var(--text-muted);
+            font-size: 0.95rem;
+            line-height: 1.5;
+            margin-bottom: 1.5rem;
+        }
+
+        .spinner {
+            width: 40px;
+            height: 40px;
+            border: 4px solid rgba(255, 255, 255, 0.1);
+            border-top: 4px solid var(--danger);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 1.5rem auto;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
         /* Responsive Layout Overrides */
         @media (max-width: 1024px) {
             .panel-container {
@@ -612,6 +708,17 @@ function getHtmlContent(port: number): string {
             <button class="btn-danger" onclick="triggerRollback()">Emergency Rollback</button>
         </div>
     </header>
+
+    <!-- Disconnect Overlay -->
+    <div id="disconnect-overlay" class="disconnect-overlay">
+        <div class="disconnect-box">
+            <div class="spinner"></div>
+            <div class="disconnect-title">Connection Lost</div>
+            <div class="disconnect-text">
+                Disconnected from the CiscoLLM Swarm. Ensure your local CLI execution is active and the API server is running.
+            </div>
+        </div>
+    </div>
 
     <!-- Top Metrics Overview -->
     <div class="metrics-grid">
@@ -715,11 +822,13 @@ function getHtmlContent(port: number): string {
         let activeTab = 'topology-tab';
         let rawLogs = [];
         let logFilter = 'ALL';
+        let isConnected = true;
 
         let lastTopologyJson = '';
         let lastSessionsJson = '';
         let lastLogsJson = '';
         let lastDiffsJson = '';
+        let lastAuditsJson = '';
 
         function switchTab(tabId) {
             document.querySelectorAll('.tab-button').forEach(btn => btn.classList.remove('active'));
@@ -737,138 +846,134 @@ function getHtmlContent(port: number): string {
         }
 
         async function reloadData() {
-            await Promise.all([
-                loadTopology(),
-                loadSessions(),
-                loadLogs(),
-                loadDiffs()
-            ]);
-        }
-
-        async function loadTopology() {
             try {
-                const res = await fetch('/api/topology');
+                const res = await fetch('/api/state');
+                if (!res.ok) throw new Error("HTTP " + res.status);
                 const data = await res.json();
-                
-                const stableData = {
-                    nodes: (data && data.nodes) ? data.nodes : [],
-                    links: (data && data.links) ? data.links : []
-                };
-                const currentJson = JSON.stringify(stableData);
-                if (currentJson === lastTopologyJson) {
-                    return;
-                }
-                lastTopologyJson = currentJson;
-                
-                const container = document.getElementById('topology-canvas');
-                const nodes = [];
-                const edges = [];
 
-                if (data && data.nodes) {
-                    document.getElementById('count-devices').innerText = data.nodes.length;
-                    data.nodes.forEach(node => {
-                        const isSwitch = node.toLowerCase().includes('switch');
-                        nodes.push({
-                            id: node,
-                            label: node,
-                            shape: 'box',
-                            margin: 12,
-                            color: {
-                                background: isSwitch ? '#1E293B' : '#4F46E5',
-                                border: '#6366F1'
-                            },
-                            font: { color: '#ffffff', size: 14, face: 'Outfit' }
-                        });
-                    });
+                if (!isConnected) {
+                    isConnected = true;
+                    document.getElementById('disconnect-overlay').classList.remove('visible');
                 }
 
-                if (data && data.links) {
-                    document.getElementById('count-links').innerText = data.links.length;
-                    data.links.forEach((link, idx) => {
-                        edges.push({
-                            id: 'e' + idx,
-                            from: link.localDeviceId,
-                            to: link.remoteDeviceId,
-                            label: link.localInterface + ' ↔ ' + link.remoteInterface,
-                            font: { color: '#9CA3AF', size: 10, strokeWidth: 0, face: 'Outfit' },
-                            color: { color: '#4B5563' }
-                        });
-                    });
-                }
-
-                const visData = {
-                    nodes: new vis.DataSet(nodes),
-                    edges: new vis.DataSet(edges)
-                };
-
-                const options = {
-                    physics: { enabled: true, solver: 'repulsion', repulsion: { nodeDistance: 150 } },
-                    layout: { randomSeed: 42 },
-                    interaction: { keyboard: false }
-                };
-
-                if (network) network.destroy();
-                network = new vis.Network(container, visData, options);
+                // Update UI sections
+                updateTopologyUI(data.topology);
+                updateSessionsUI(data.sessions);
+                updateLogsUI(data.logs);
+                updateDiffsUI(data.diffs);
+                updateAuditsUI(data.audits);
 
             } catch (e) {
-                console.error("Failed to load topology", e);
+                console.error("Connection failed: ", e);
+                if (isConnected) {
+                    isConnected = false;
+                    document.getElementById('disconnect-overlay').classList.add('visible');
+                }
             }
         }
 
-        async function loadSessions() {
-            try {
-                const res = await fetch('/api/sessions');
-                const data = await res.json();
-                
-                const currentJson = JSON.stringify(data);
-                if (currentJson === lastSessionsJson) {
-                    return;
-                }
-                lastSessionsJson = currentJson;
-                const container = document.getElementById('sessions-container');
+        function updateTopologyUI(data) {
+            const stableData = {
+                nodes: (data && data.nodes) ? data.nodes : [],
+                links: (data && data.links) ? data.links : []
+            };
+            const currentJson = JSON.stringify(stableData);
+            if (currentJson === lastTopologyJson) {
+                return;
+            }
+            lastTopologyJson = currentJson;
+            
+            const container = document.getElementById('topology-canvas');
+            const nodes = [];
+            const edges = [];
 
-                const keys = Object.keys(data);
-                if (keys.length === 0) {
-                    container.innerHTML = '<div style="color: var(--text-muted); grid-column: 1/-1;">No connected device sessions found.</div>';
-                    return;
-                }
-
-                let cards = '';
-                keys.forEach(id => {
-                    const session = data[id];
-                    cards += '<div class="session-card">';
-                    cards += '<div class="session-title">';
-                    cards += '<span>' + (session.hostname || id) + '</span>';
-                    cards += '<span class="session-badge">' + session.currentMode + '</span>';
-                    cards += '</div>';
-                    cards += '<div class="session-field"><span>Target URI</span><span>' + id + '</span></div>';
-                    cards += '<div class="session-field"><span>Prompt</span><span>' + session.prompt + '</span></div>';
-                    cards += '<div class="session-field"><span>Status</span><span style="color: var(--success);">● Active</span></div>';
-                    cards += '</div>';
+            if (data && data.nodes) {
+                document.getElementById('count-devices').innerText = data.nodes.length;
+                data.nodes.forEach(node => {
+                    const isSwitch = node.toLowerCase().includes('switch');
+                    nodes.push({
+                        id: node,
+                        label: node,
+                        shape: 'box',
+                        margin: 12,
+                        color: {
+                            background: isSwitch ? '#1E293B' : '#4F46E5',
+                            border: '#6366F1'
+                        },
+                        font: { color: '#ffffff', size: 14, face: 'Outfit' }
+                    });
                 });
-                container.innerHTML = cards;
-
-            } catch (e) {
-                console.error("Failed to load sessions", e);
             }
+
+            if (data && data.links) {
+                document.getElementById('count-links').innerText = data.links.length;
+                data.links.forEach((link, idx) => {
+                    edges.push({
+                        id: 'e' + idx,
+                        from: link.localDeviceId,
+                        to: link.remoteDeviceId,
+                        label: link.localInterface + ' ↔ ' + link.remoteInterface,
+                        font: { color: '#9CA3AF', size: 10, strokeWidth: 0, face: 'Outfit' },
+                        color: { color: '#4B5563' }
+                    });
+                });
+            }
+
+            const visData = {
+                nodes: new vis.DataSet(nodes),
+                edges: new vis.DataSet(edges)
+            };
+
+            const options = {
+                physics: { enabled: true, solver: 'repulsion', repulsion: { nodeDistance: 150 } },
+                layout: { randomSeed: 42 },
+                interaction: { keyboard: false }
+            };
+
+            if (network) network.destroy();
+            network = new vis.Network(container, visData, options);
         }
 
-        async function loadLogs() {
-            try {
-                const res = await fetch('/api/logs');
-                rawLogs = await res.json();
-                
-                const currentJson = JSON.stringify(rawLogs);
-                if (currentJson === lastLogsJson) {
-                    return;
-                }
-                lastLogsJson = currentJson;
-
-                document.getElementById('count-logs').innerText = rawLogs.length;
-                filterLogs();
-            } catch (e) {
-                console.error("Failed to load logs", e);
+        function updateSessionsUI(data) {
+            const currentJson = JSON.stringify(data);
+            if (currentJson === lastSessionsJson) {
+                return;
             }
+            lastSessionsJson = currentJson;
+            const container = document.getElementById('sessions-container');
+
+            const keys = Object.keys(data);
+            if (keys.length === 0) {
+                container.innerHTML = '<div style="color: var(--text-muted); grid-column: 1/-1;">No connected device sessions found.</div>';
+                return;
+            }
+
+            let cards = '';
+            keys.forEach(id => {
+                const session = data[id];
+                cards += '<div class="session-card">';
+                cards += '<div class="session-title">';
+                cards += '<span>' + (session.hostname || id) + '</span>';
+                cards += '<span class="session-badge">' + session.currentMode + '</span>';
+                cards += '</div>';
+                cards += '<div class="session-field"><span>Target URI</span><span>' + id + '</span></div>';
+                cards += '<div class="session-field"><span>Prompt</span><span>' + session.prompt + '</span></div>';
+                cards += '<div class="session-field"><span>Status</span><span style="color: var(--success);">● Active</span></div>';
+                cards += '</div>';
+            });
+            container.innerHTML = cards;
+        }
+
+        function updateLogsUI(logs) {
+            rawLogs = logs;
+            const currentJson = JSON.stringify(rawLogs);
+            if (currentJson === lastLogsJson) {
+                return;
+            }
+            lastLogsJson = currentJson;
+
+            document.getElementById('count-logs').innerText = rawLogs.length;
+            filterLogs();
         }
 
         function setLogFilter(filter) {
@@ -919,118 +1024,118 @@ function getHtmlContent(port: number): string {
             }).join('');
         }
 
-        async function loadDiffs() {
-            try {
-                const res = await fetch('/api/diffs');
-                const data = await res.json();
-                
-                const currentJson = JSON.stringify(data);
-                if (currentJson === lastDiffsJson) {
-                    return;
-                }
-                lastDiffsJson = currentJson;
-                const container = document.getElementById('diffs-container');
-
-                if (!data || data.length === 0) {
-                    container.innerHTML = '<div style="color: var(--text-muted);">No configuration diffs captured yet. Apply modifications via CLI.</div>';
-                    return;
-                }
-
-                let diffsHtml = data.map(item => {
-                    let diffHtml = '';
-                    const diff = item.diff;
-
-                    if (diff.hostnameChanged) {
-                        diffHtml += '<div class="diff-modified">Hostname Changed: "' + diff.hostnameChanged.before + '" ➔ "' + diff.hostnameChanged.after + '"</div>';
-                    }
-                    if (diff.modifiedInterfaces && diff.modifiedInterfaces.length > 0) {
-                        diff.modifiedInterfaces.forEach(inf => {
-                            diffHtml += '<div class="diff-modified">Interface ' + inf.name + ' changes:</div>';
-                            inf.changes.forEach(c => {
-                                diffHtml += '<div style="padding-left: 1rem;">- ' + c.field + ': "' + c.before + '" ➔ "' + c.after + '"</div>';
-                            });
-                        });
-                    }
-                    if (diff.addedRoutes && diff.addedRoutes.length > 0) {
-                        diff.addedRoutes.forEach(r => {
-                            diffHtml += '<div class="diff-added">+ ip route ' + r.network + ' ' + r.mask + ' ' + (r.nextHop || '') + '</div>';
-                        });
-                    }
-                    if (diff.removedRoutes && diff.removedRoutes.length > 0) {
-                        diff.removedRoutes.forEach(r => {
-                            diffHtml += '<div class="diff-removed">- ip route ' + r.network + ' ' + r.mask + ' ' + (r.nextHop || '') + '</div>';
-                        });
-                    }
-                    if (diff.addedVlans && diff.addedVlans.length > 0) {
-                        diffHtml += '<div class="diff-added">+ VLANs Added: ' + diff.addedVlans.join(', ') + '</div>';
-                    }
-                    if (diff.removedVlans && diff.removedVlans.length > 0) {
-                        diffHtml += '<div class="diff-removed">- VLANs Removed: ' + diff.removedVlans.join(', ') + '</div>';
-                    }
-
-                    if (!diffHtml) {
-                        diffHtml = '<div style="color: var(--text-muted);">No configuration changes made in this step.</div>';
-                    }
-
-                    let wrapperHtml = '<div style="border-bottom: 1px solid var(--border-color); padding: 0.5rem 0;">';
-                    wrapperHtml += '<div style="font-size: 0.8rem; color: var(--text-muted);">' + new Date(item.timestamp).toLocaleTimeString() + ' - Device: ' + item.deviceId + '</div>';
-                    wrapperHtml += diffHtml;
-                    wrapperHtml += '</div>';
-                    return wrapperHtml;
-                }).join('');
-
-                container.innerHTML = diffsHtml;
-
-                // Also populate visual audit compare using the same data (if pre/post flights are recorded)
-                updateAuditCompare();
-
-            } catch (e) {
-                console.error("Failed to load diffs", e);
+        function updateDiffsUI(data) {
+            const currentJson = JSON.stringify(data);
+            if (currentJson === lastDiffsJson) {
+                return;
             }
+            lastDiffsJson = currentJson;
+            const container = document.getElementById('diffs-container');
+
+            if (!data || data.length === 0) {
+                container.innerHTML = '<div style="color: var(--text-muted);">No configuration diffs captured yet. Apply modifications via CLI.</div>';
+                return;
+            }
+
+            let diffsHtml = data.map(item => {
+                let diffHtml = '';
+                const diff = item.diff;
+
+                if (diff.hostnameChanged) {
+                    diffHtml += '<div class="diff-modified">Hostname Changed: "' + diff.hostnameChanged.before + '" ➔ "' + diff.hostnameChanged.after + '"</div>';
+                }
+                if (diff.modifiedInterfaces && diff.modifiedInterfaces.length > 0) {
+                    diff.modifiedInterfaces.forEach(inf => {
+                        diffHtml += '<div class="diff-modified">Interface ' + inf.name + ' changes:</div>';
+                        inf.changes.forEach(c => {
+                            diffHtml += '<div style="padding-left: 1rem;">- ' + c.field + ': "' + c.before + '" ➔ "' + c.after + '"</div>';
+                        });
+                    });
+                }
+                if (diff.addedRoutes && diff.addedRoutes.length > 0) {
+                    diff.addedRoutes.forEach(r => {
+                        diffHtml += '<div class="diff-added">+ ip route ' + r.network + ' ' + r.mask + ' ' + (r.nextHop || '') + '</div>';
+                    });
+                }
+                if (diff.removedRoutes && diff.removedRoutes.length > 0) {
+                    diff.removedRoutes.forEach(r => {
+                        diffHtml += '<div class="diff-removed">- ip route ' + r.network + ' ' + r.mask + ' ' + (r.nextHop || '') + '</div>';
+                    });
+                }
+                if (diff.addedVlans && diff.addedVlans.length > 0) {
+                    diffHtml += '<div class="diff-added">+ VLANs Added: ' + diff.addedVlans.join(', ') + '</div>';
+                }
+                if (diff.removedVlans && diff.removedVlans.length > 0) {
+                    diffHtml += '<div class="diff-removed">- VLANs Removed: ' + diff.removedVlans.join(', ') + '</div>';
+                }
+
+                if (!diffHtml) {
+                    diffHtml = '<div style="color: var(--text-muted);">No configuration changes made in this step.</div>';
+                }
+
+                let wrapperHtml = '<div style="border-bottom: 1px solid var(--border-color); padding: 0.5rem 0;">';
+                wrapperHtml += '<div style="font-size: 0.8rem; color: var(--text-muted);">' + new Date(item.timestamp).toLocaleTimeString() + ' - Device: ' + item.deviceId + '</div>';
+                wrapperHtml += diffHtml;
+                wrapperHtml += '</div>';
+                return wrapperHtml;
+            }).join('');
+
+            container.innerHTML = diffsHtml;
         }
 
-        // Generate a visual audit compare from dynamic history/mock details
-        function updateAuditCompare() {
+        function updateAuditsUI(audits) {
+            const currentJson = JSON.stringify(audits);
+            if (currentJson === lastAuditsJson) {
+                return;
+            }
+            lastAuditsJson = currentJson;
             const container = document.getElementById('audit-compare-container');
-            
-            // We can reconstruct pre/post flight states visually
-            let html = '<div class="audit-visualizer">';
-            
-            // Pre-Flight Audits
-            html += '<div class="audit-card">';
-            html += '<h4>Pre-Flight Inspection</h4>';
-            html += '<div class="audit-metric"><span>Gateway (192.168.1.254)</span><span style="color: var(--success);">● Reachable</span></div>';
-            html += '<div class="audit-metric"><span>Down Interfaces</span><span>2 down</span></div>';
-            html += '<div class="audit-metric"><span>Dynamic Routes (OSPF)</span><span>0 routes</span></div>';
-            html += '<div class="audit-metric"><span>OSPF Neighbors</span><span>0 peers</span></div>';
-            html += '</div>';
 
-            // Post-Flight Audits
-            html += '<div class="audit-card">';
-            html += '<h4>Post-Flight Inspection</h4>';
-            
-            // Deduce OSPF activation status from rawLogs
-            const isOspfConfigured = rawLogs.some(l => l.command && l.command.toLowerCase().includes('router ospf') && l.status === 'SUCCESS');
-            
-            html += '<div class="audit-metric"><span>Gateway (192.168.1.254)</span><span style="color: var(--success);">● Reachable</span></div>';
-            html += '<div class="audit-metric"><span>Down Interfaces</span><span>2 down</span></div>';
-            
-            if (isOspfConfigured) {
-                html += '<div class="audit-metric"><span>Dynamic Routes (OSPF)</span><span style="color: var(--success); font-weight: 600;">1 route</span></div>';
-                html += '<div class="audit-metric"><span>OSPF Neighbors</span><span style="color: var(--success); font-weight: 600;">1 peer</span></div>';
-            } else {
-                html += '<div class="audit-metric"><span>Dynamic Routes (OSPF)</span><span>0 routes</span></div>';
-                html += '<div class="audit-metric"><span>OSPF Neighbors</span><span>0 peers</span></div>';
+            if (!audits || audits.length === 0) {
+                container.innerHTML = '<div style="color: var(--text-muted);">No comparison snapshot captured. Trigger commands to evaluate audits.</div>';
+                return;
             }
-            html += '</div>';
 
-            html += '</div>'; // End visualizer
-            
-            if (isOspfConfigured) {
-                html += '<div style="color: var(--success); margin-top: 1rem; font-weight: 600; font-size: 0.9rem;">[+] Network change window verification check is stable and OSPF neighbors are up.</div>';
-            } else {
-                html += '<div style="color: var(--warning); margin-top: 1rem; font-size: 0.95rem;">[!] Gateway reachability is stable. No new OSPF routing adjacencies have been activated yet.</div>';
-            }
+            let html = '';
+            audits.forEach(audit => {
+                const pre = audit.pre;
+                const post = audit.post;
+                
+                html += '<div style="margin-bottom: 2rem; border-bottom: 1px solid var(--border-color); padding-bottom: 1.5rem;">';
+                html += '<div style="font-size: 0.9rem; color: var(--text-muted); margin-bottom: 0.75rem;">Device Target: <strong>' + audit.deviceId + '</strong> (' + new Date(audit.timestamp).toLocaleTimeString() + ')</div>';
+                html += '<div class="audit-visualizer">';
+                
+                // Pre-flight Card
+                html += '<div class="audit-card">';
+                html += '<h4>Pre-Flight Inspection</h4>';
+                html += '<div class="audit-metric"><span>Gateway Reachability</span>' + (pre.pingReachability ? '<span style="color: var(--success);">● Reachable</span>' : '<span style="color: var(--danger);">● Unreachable</span>') + '</div>';
+                html += '<div class="audit-metric"><span>Down Interfaces</span><span>' + pre.downInterfacesCount + ' down</span></div>';
+                html += '<div class="audit-metric"><span>Dynamic Routes</span><span>' + pre.dynamicRoutesCount + ' routes</span></div>';
+                html += '<div class="audit-metric"><span>Routing Adjacencies</span><span>' + pre.routingAdjacenciesCount + ' peers</span></div>';
+                html += '</div>';
+
+                // Post-flight Card
+                html += '<div class="audit-card">';
+                html += '<h4>Post-Flight Inspection</h4>';
+                html += '<div class="audit-metric"><span>Gateway Reachability</span>' + (post.pingReachability ? '<span style="color: var(--success);">● Reachable</span>' : '<span style="color: var(--danger);">● Unreachable</span>') + '</div>';
+                html += '<div class="audit-metric"><span>Down Interfaces</span><span>' + post.downInterfacesCount + ' down</span></div>';
+                html += '<div class="audit-metric"><span>Dynamic Routes</span><span>' + post.dynamicRoutesCount + ' routes</span></div>';
+                html += '<div class="audit-metric"><span>Routing Adjacencies</span><span>' + post.routingAdjacenciesCount + ' peers</span></div>';
+                html += '</div>';
+
+                html += '</div>'; // End audit-visualizer
+
+                // Status message
+                if (pre.pingReachability && !post.pingReachability) {
+                    html += '<div style="color: var(--danger); margin-top: 1rem; font-weight: 600; font-size: 0.9rem;">[!] WARNING: Network gateway reachability was LOST during this configuration window!</div>';
+                } else if (!pre.pingReachability && post.pingReachability) {
+                    html += '<div style="color: var(--success); margin-top: 1rem; font-weight: 600; font-size: 0.9rem;">[+] SUCCESS: Network gateway reachability was RESTORED during this configuration window!</div>';
+                } else {
+                    html += '<div style="color: var(--success); margin-top: 1rem; font-weight: 600; font-size: 0.9rem;">[+] Audit check: Network gateway reachability is stable.</div>';
+                }
+                
+                html += '</div>'; // End outer wrapper
+            });
 
             container.innerHTML = html;
         }

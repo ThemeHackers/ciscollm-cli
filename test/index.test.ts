@@ -432,6 +432,110 @@ PlinkSerialSession.listAvailableComPorts().then(async (ports) => {
         assert.ok(vlanBriefOut.includes('Gi0/1'), 'show vlan brief should list Gi0/1 under VLAN 60 ports');
 
 
+        
+        sim.execute('configure terminal');
+        sim.execute('router rip');
+        assert.strictEqual(sim.mode, 'RIP_CONFIG', 'router rip should transition to RIP_CONFIG');
+        assert.strictEqual(sim.getPrompt(), 'Switch1(config-router)# ', 'RIP_CONFIG prompt should be (config-router)#');
+        sim.execute('version 2');
+        assert.strictEqual((sim as any).ripVersion, 2, 'version 2 should configure RIP version to 2');
+        sim.execute('no auto-summary');
+        assert.strictEqual((sim as any).ripAutoSummary, false, 'no auto-summary should disable auto-summary');
+        sim.execute('exit');
+        assert.strictEqual(sim.mode, 'GLOBAL_CONFIG', 'exit in RIP_CONFIG should return to GLOBAL_CONFIG');
+
+        sim.execute('router bgp 65000');
+        assert.strictEqual(sim.mode, 'BGP_CONFIG', 'router bgp should transition to BGP_CONFIG');
+        assert.strictEqual(sim.getPrompt(), 'Switch1(config-router)# ', 'BGP_CONFIG prompt should be (config-router)#');
+        sim.execute('exit');
+        assert.strictEqual(sim.mode, 'GLOBAL_CONFIG', 'exit in BGP_CONFIG should return to GLOBAL_CONFIG');
+
+    
+        const stpResult = sim.execute('spanning-tree mode rapid-pvst');
+        assert.strictEqual(stpResult, '', 'spanning-tree mode rapid-pvst should execute successfully');
+
+     
+        sim.execute('interface GigabitEthernet0/1');
+        sim.execute('switchport mode trunk');
+        assert.strictEqual(gi01.switchportMode, 'trunk', 'switchport mode trunk should set switchportMode to trunk');
+        const cgResult = sim.execute('channel-group 1 mode active');
+        assert.strictEqual(cgResult, '', 'channel-group command should execute successfully');
+        sim.execute('end');
+
+
+        const protocolsOut = sim.execute('show ip protocols');
+        assert.ok(protocolsOut.includes('Routing Protocol is "rip"'), 'show ip protocols should contain rip');
+        assert.ok(protocolsOut.includes('Routing Protocol is "bgp 65000"'), 'show ip protocols should contain bgp 65000');
+        assert.ok(protocolsOut.includes('Automatic network summarization is not in effect'), 'show ip protocols should report auto-summary state');
+
+
+        // Test EIGRP, VTP, HSRP, VRRP, ACLs, NAT, NTP, SNMP simulator support
+        sim.execute('configure terminal');
+        sim.execute('router eigrp 100');
+        assert.strictEqual(sim.mode, 'EIGRP_CONFIG', 'router eigrp should transition to EIGRP_CONFIG');
+        assert.strictEqual(sim.getPrompt(), 'Switch1(config-router)# ', 'EIGRP_CONFIG prompt should be (config-router)#');
+        sim.execute('network 192.168.1.0');
+        sim.execute('exit');
+
+        sim.execute('vtp mode client');
+        assert.strictEqual((sim as any).vtpMode, 'client', 'vtp mode client should set mode to client');
+        sim.execute('vtp domain mydomain');
+        assert.strictEqual((sim as any).vtpDomain, 'mydomain', 'vtp domain should set domain');
+
+        sim.execute('ntp server 10.0.0.5');
+        assert.ok((sim as any).ntpServers.includes('10.0.0.5'), 'ntp server should be added');
+
+        sim.execute('snmp-server community public RO');
+        assert.ok((sim as any).snmpCommunities.includes('public'), 'snmp community should be added');
+
+        sim.execute('ip nat inside source list 1 interface GigabitEthernet0/0 overload');
+        assert.ok((sim as any).natRules.length > 0, 'nat rule should be added');
+
+        sim.execute('access-list 10 permit 192.168.1.0 0.0.0.255');
+        assert.ok((sim as any).acls.has('10'), 'acl should be created');
+
+        sim.execute('interface GigabitEthernet0/1');
+        sim.execute('standby 1 ip 10.0.0.1');
+        sim.execute('standby 1 priority 110');
+        sim.execute('standby 1 preempt');
+        const hsrp = (sim as any).hsrpGroups.get('1')!;
+        assert.strictEqual(hsrp.virtualIp, '10.0.0.1', 'HSRP vip should be set');
+        assert.strictEqual(hsrp.priority, 110, 'HSRP priority should be set');
+        assert.strictEqual(hsrp.preempt, true, 'HSRP preempt should be set');
+
+        sim.execute('vrrp 2 ip 10.0.0.2');
+        sim.execute('vrrp 2 priority 120');
+        const vrrp = (sim as any).vrrpGroups.get('2')!;
+        assert.strictEqual(vrrp.virtualIp, '10.0.0.2', 'VRRP vip should be set');
+        assert.strictEqual(vrrp.priority, 120, 'VRRP priority should be set');
+
+        sim.execute('ip nat inside');
+        assert.strictEqual(gi01.natType, 'inside', 'nat inside should be set');
+        sim.execute('end');
+
+        // Test show commands
+        const vtpOut = sim.execute('show vtp status');
+        assert.ok(vtpOut.includes('VTP Operating Mode                 : client'), 'show vtp status should show Mode client');
+
+        const standbyOut = sim.execute('show standby brief');
+        assert.ok(standbyOut.includes('10.0.0.1'), 'show standby should show vip');
+
+        const vrrpOut = sim.execute('show vrrp brief');
+        assert.ok(vrrpOut.includes('10.0.0.2'), 'show vrrp should show vip');
+
+        const natOut = sim.execute('show ip nat translations');
+        assert.ok(natOut.includes('192.168.1.10'), 'show ip nat translations should return active rules');
+
+        const aclOut = sim.execute('show access-lists');
+        assert.ok(aclOut.includes('Standard IP access list 10'), 'show access-lists should show acl 10');
+
+        const ntpOut = sim.execute('show ntp status');
+        assert.ok(ntpOut.includes('10.0.0.5'), 'show ntp status should report reference server');
+
+        const newProtocolsOut = sim.execute('show ip protocols');
+        assert.ok(newProtocolsOut.includes('Routing Protocol is "eigrp 100"'), 'show ip protocols should contain eigrp');
+
+
         const dummyTopology = { devices: [], links: [] } as any;
         const routeValidation1 = PreExecutionValidator.validateCommand('no ip route 192.168.1.0 255.255.255.0', '192.168.1.254', dummyTopology, null);
         assert.strictEqual(routeValidation1.safe, false, 'Deleting management network route should be unsafe');

@@ -330,6 +330,7 @@ export class CiscoAgentLoop {
             try {
                 const postSnap = await networkAudit.takeSnapshot(deviceId);
                 postAuditSpinner.stop();
+                this.coordinator.recordAudit(deviceId, preSnap, postSnap);
                 const report = NetworkAudit.renderAuditReport(preSnap, postSnap);
                 console.log(report);
             } catch (e: any) {
