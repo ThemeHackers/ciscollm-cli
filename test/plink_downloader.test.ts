@@ -16,21 +16,14 @@ async function runTest() {
     const projectRootPath = path.resolve(__dirname, '..', 'plink.exe');
     const nextToExecPath = path.resolve(__dirname, '..', 'src', 'infrastructure', 'protocols', 'plink.exe');
 
-    let localCwdBackup: Buffer | null = null;
-    let projectRootBackup: Buffer | null = null;
-    let nextToExecBackup: Buffer | null = null;
+    const uniquePaths = Array.from(new Set([localCwdPath, projectRootPath, nextToExecPath]));
+    const backups = new Map<string, Buffer>();
 
-    if (fs.existsSync(localCwdPath)) {
-        localCwdBackup = fs.readFileSync(localCwdPath);
-        fs.unlinkSync(localCwdPath);
-    }
-    if (fs.existsSync(projectRootPath)) {
-        projectRootBackup = fs.readFileSync(projectRootPath);
-        fs.unlinkSync(projectRootPath);
-    }
-    if (fs.existsSync(nextToExecPath)) {
-        nextToExecBackup = fs.readFileSync(nextToExecPath);
-        fs.unlinkSync(nextToExecPath);
+    for (const p of uniquePaths) {
+        if (fs.existsSync(p)) {
+            backups.set(p, fs.readFileSync(p));
+            fs.unlinkSync(p);
+        }
     }
 
     try {
@@ -49,13 +42,24 @@ async function runTest() {
         console.error('Integration Test FAILED:', e.stack || e.message);
         process.exit(1);
     } finally {
-        if (fs.existsSync(localCwdPath)) fs.unlinkSync(localCwdPath);
-        if (fs.existsSync(projectRootPath)) fs.unlinkSync(projectRootPath);
-        if (fs.existsSync(nextToExecPath)) fs.unlinkSync(nextToExecPath);
 
-        if (localCwdBackup) fs.writeFileSync(localCwdPath, localCwdBackup);
-        if (projectRootBackup) fs.writeFileSync(projectRootPath, projectRootBackup);
-        if (nextToExecBackup) fs.writeFileSync(nextToExecPath, nextToExecBackup);
+        await new Promise(resolve => setTimeout(resolve, 500));
+
+      
+        for (const p of uniquePaths) {
+            if (fs.existsSync(p)) {
+                try {
+                    fs.unlinkSync(p);
+                } catch (err) {}
+            }
+        }
+
+
+        for (const [p, content] of backups.entries()) {
+            try {
+                fs.writeFileSync(p, content);
+            } catch (err) {}
+        }
     }
 }
 

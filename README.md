@@ -11,7 +11,7 @@
    * Supports both local models (Ollama, LM Studio) and cloud endpoints (OpenRouter).
 
 2. **Enterprise-Grade Safety Guardrails & Custom Playbook**
-   * **Command Firewall**: Intercepts high-risk commands (e.g., disabling AAA, removing access groups, shutting management interfaces).
+   * **Command Firewall**: Intercepts high-risk commands (e.g., disabling AAA, removing access groups, shutting management interfaces) and automatically **normalizes Cisco IOS command abbreviations** (e.g. `shut` -> `shutdown`, `no ip add` -> `no ip address`) to prevent firewall bypasses.
    * **Custom Playbook (`.ciscollm-guard.yaml`)**: Custom block lists, protected interfaces, and confirmation rules loaded dynamically from your project directory.
    * **Dry-Run Validation**: Analyzes network topology beforehand to prevent accidental disruptions.
    * **Strict Command Reference**: Restricts execution to valid Cisco IOS command sets indexed from `cf_command_ref.pdf`.
@@ -19,9 +19,10 @@
 3. **Closed-Loop Auto-Healing (AIOps)**
    * Real-time monitoring of syslog notification events (interface state transitions, OSPF adjacency status changes).
    * Autonomous diagnosis, remediation planning, validation, and rollback via an AI-driven OODA loop.
+   * **Livelock Prevention (Cooldown)**: Implements sliding-window rate-limiting (maximum 3 healing events within 10 minutes) that triggers a 15-minute cooldown period to protect devices from flapping interface infinite loops.
 
 4. **Atomic Transactions & Recovery**
-   * **Atomic Replace**: Backs up configuration to flash and uses `configure replace` to restore state on failures.
+   * **Atomic Replace**: Backs up configuration to flash and uses `configure replace` to restore state on failures. Includes a **pre-flight flash space check** to ensure enough storage exists before performing backups.
    * **Command Inversion Fallback**: Generates reverse commands (e.g., `shutdown` -> `no shutdown`) to recover state if flash storage is unavailable.
 
 5. **Live Visualization & Audits**

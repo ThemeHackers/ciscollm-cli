@@ -34,8 +34,91 @@ export class CommandFirewall {
     }
 
     
+    public static normalizeCiscoCommand(command: string): string {
+        const trimmed = command.trim();
+        const parts = trimmed.split(/\s+/);
+        if (parts.length === 0 || !parts[0]) return trimmed;
+
+        const firstToken = parts[0].toLowerCase();
+
+       
+        if (firstToken === 'no' && parts.length > 1) {
+            const subNormalized = CommandFirewall.normalizeCiscoCommand(parts.slice(1).join(' '));
+            return `no ${subNormalized}`;
+        }
+
+        
+        if (firstToken.startsWith('conf') && 'configure'.startsWith(firstToken)) {
+            if (parts[1] && parts[1].toLowerCase().startsWith('t') && 'terminal'.startsWith(parts[1].toLowerCase())) {
+                return 'configure terminal';
+            }
+            parts[0] = 'configure';
+        } else if (firstToken.startsWith('int') && 'interface'.startsWith(firstToken)) {
+            parts[0] = 'interface';
+            if (parts[1]) {
+                parts[1] = CommandFirewall.normalizeInterfaceName(parts[1]);
+            }
+        } else if (firstToken.startsWith('shut') && 'shutdown'.startsWith(firstToken)) {
+            parts[0] = 'shutdown';
+        } else if (firstToken.startsWith('desc') && 'description'.startsWith(firstToken)) {
+            parts[0] = 'description';
+        } else if (firstToken.startsWith('cry') && 'crypto'.startsWith(firstToken)) {
+            parts[0] = 'crypto';
+            if (parts[1] && parts[1].toLowerCase().startsWith('ke') && 'key'.startsWith(parts[1].toLowerCase())) {
+                parts[1] = 'key';
+                if (parts[2] && parts[2].toLowerCase().startsWith('ze') && 'zeroize'.startsWith(parts[2].toLowerCase())) {
+                    parts[2] = 'zeroize';
+                }
+            }
+        } else if (firstToken.startsWith('wr') && 'write'.startsWith(firstToken)) {
+            parts[0] = 'write';
+            if (parts[1] && parts[1].toLowerCase().startsWith('er') && 'erase'.startsWith(parts[1].toLowerCase())) {
+                parts[1] = 'erase';
+            }
+        } else if (firstToken.startsWith('er') && 'erase'.startsWith(firstToken)) {
+            parts[0] = 'erase';
+        } else if (firstToken.startsWith('reload') && 'reload'.startsWith(firstToken)) {
+            parts[0] = 'reload';
+        } else if (firstToken === 'ip') {
+            if (parts[1] && parts[1].toLowerCase().startsWith('add') && 'address'.startsWith(parts[1].toLowerCase())) {
+                parts[1] = 'address';
+            } else if (parts[1] && parts[1].toLowerCase().startsWith('access-g') && 'access-group'.startsWith(parts[1].toLowerCase())) {
+                parts[1] = 'access-group';
+            } else if (parts[1] && parts[1].toLowerCase().startsWith('access-l') && 'access-list'.startsWith(parts[1].toLowerCase())) {
+                parts[1] = 'access-list';
+            }
+        } else if (firstToken === 'aaa') {
+            if (parts[1] && parts[1].toLowerCase().startsWith('new') && 'new-model'.startsWith(parts[1].toLowerCase())) {
+                parts[1] = 'new-model';
+            }
+        }
+
+        return parts.join(' ');
+    }
+
+    public static normalizeInterfaceName(name: string): string {
+        const lower = name.toLowerCase();
+        if (lower.startsWith('gi') && !lower.startsWith('gigabitethernet')) {
+            return 'gigabitethernet' + name.substring(2);
+        }
+        if (lower.startsWith('fa') && !lower.startsWith('fastethernet')) {
+            return 'fastethernet' + name.substring(2);
+        }
+        if (lower.startsWith('te') && !lower.startsWith('tengigabitethernet')) {
+            return 'tengigabitethernet' + name.substring(2);
+        }
+        if (lower.startsWith('vl') && !lower.startsWith('vlan')) {
+            return 'vlan' + name.substring(2);
+        }
+        if (lower.startsWith('lo') && !lower.startsWith('loopback')) {
+            return 'loopback' + name.substring(2);
+        }
+        return name;
+    }
+
     public checkCommand(command: string, currentInterfaceContext: string | null): { dangerous: boolean; reason?: string } {
-        const normalized = command.toLowerCase().trim();
+        const normalizedCommand = CommandFirewall.normalizeCiscoCommand(command);
+        const normalized = normalizedCommand.toLowerCase().trim();
 
         if (this.playbook) {
             if (Array.isArray(this.playbook.blockedCommands)) {
@@ -70,7 +153,6 @@ export class CommandFirewall {
             };
         }
 
-      
         if (normalized.startsWith('no aaa new-model') || normalized.startsWith('crypto key zeroize')) {
             return {
                 dangerous: true,
@@ -78,7 +160,6 @@ export class CommandFirewall {
             };
         }
 
-       
         if (normalized.startsWith('no access-list') || normalized.startsWith('no ip access-group')) {
             return {
                 dangerous: true,
@@ -96,9 +177,9 @@ export class CommandFirewall {
             };
         }
 
-        const interfaceMatch = /^interface\s+([A-Za-z0-9\/\.\-]+)/i.exec(command.trim());
+        const interfaceMatch = /^interface\s+([A-Za-z0-9\/\.\-]+)/i.exec(normalizedCommand);
         if (interfaceMatch) {
-            const targetedInterface = interfaceMatch[1].toLowerCase().trim();
+            const targetedInterface = CommandFirewall.normalizeInterfaceName(interfaceMatch[1]).toLowerCase().trim();
             
             if (this.isProtected(targetedInterface) && normalized.includes('shutdown') && !normalized.includes('no shutdown')) {
                 return {
@@ -109,7 +190,7 @@ export class CommandFirewall {
         }
 
         if (currentInterfaceContext) {
-            const activeIntf = currentInterfaceContext.toLowerCase().trim();
+            const activeIntf = CommandFirewall.normalizeInterfaceName(currentInterfaceContext).toLowerCase().trim();
             if (this.isProtected(activeIntf)) {
                 if (normalized === 'shutdown') {
                     return {
@@ -117,7 +198,7 @@ export class CommandFirewall {
                         reason: `Cannot shutdown active protected management interface: ${currentInterfaceContext}`
                     };
                 }
-                if (normalized.startsWith('no ip address') || normalized.startsWith('no ip add')) {
+                if (normalized.startsWith('no ip address')) {
                     return {
                         dangerous: true,
                         reason: `Cannot remove IP address configuration from protected interface: ${currentInterfaceContext}`
@@ -130,11 +211,13 @@ export class CommandFirewall {
     }
 
     private isProtected(interfaceName: string): boolean {
-        return this.protectedInterfaces.some(p => 
-            p === interfaceName || 
-            interfaceName.startsWith(p) || 
-            p.startsWith(interfaceName)
-        );
+        const normalizedTarget = CommandFirewall.normalizeInterfaceName(interfaceName).toLowerCase().trim();
+        return this.protectedInterfaces.some(p => {
+            const normalizedP = CommandFirewall.normalizeInterfaceName(p).toLowerCase().trim();
+            return normalizedP === normalizedTarget || 
+                   normalizedTarget.startsWith(normalizedP) || 
+                   normalizedP.startsWith(normalizedTarget);
+        });
     }
 
     public async verifyWithHuman(command: string, reason: string): Promise<boolean> {

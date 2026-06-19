@@ -25,6 +25,25 @@ export class TransactionManager {
                 return;
             }
 
+          
+            const freeSpaceMatch = /(\d+)\s+bytes\s+free/i.exec(flashCheck) || /(\d+)\s+bytes\s+available/i.exec(flashCheck);
+            if (freeSpaceMatch) {
+                const freeBytes = parseInt(freeSpaceMatch[1], 10);
+                let configSize = 50000; 
+                try {
+                    const runningConfig = await session.execute('show running-config');
+                    if (runningConfig && !runningConfig.includes('% Invalid')) {
+                        configSize = runningConfig.length;
+                    }
+                } catch {}
+
+                const requiredMargin = Math.max(50000, configSize * 1.5);
+                if (freeBytes < requiredMargin) {
+                    console.warn(chalk.yellow(`[!] Flash space is too low: only ${freeBytes} bytes free (required safety margin: ${requiredMargin} bytes). Skipping backup creation to prevent write failures.`));
+                    return;
+                }
+            }
+
             console.log(chalk.cyan('❯ Creating device running-config backup on flash...'));
             const rawOutput = await session.execute(`copy running-config ${this.backupFilename}`);
             

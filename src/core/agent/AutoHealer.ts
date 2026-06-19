@@ -22,6 +22,8 @@ export class AutoHealer {
     private minConfidence: number;
     private nonInteractive: boolean;
     private firewall = new CommandFirewall();
+    private triggerHistory = new Map<string, number[]>(); 
+    private blockedUntil = new Map<string, number>(); 
 
     constructor(
         private llmClient: LLMClient,
@@ -56,8 +58,30 @@ export class AutoHealer {
         const isTrigger = /%(LINK-3-UPDOWN|LINEPROTO-5-UPDOWN|OSPF-5-ADJCHG):/.test(msg);
         if (!isTrigger) return;
 
+        const now = Date.now();
+        const blockTime = this.blockedUntil.get(deviceId);
+        if (blockTime && now < blockTime) {
+            const minutesLeft = Math.ceil((blockTime - now) / 60000);
+            logger.warn(`[AutoHealer Cooldown] Healing triggers for ${deviceId} are blocked for another ${minutesLeft} minute(s) due to rapid repetitive alerts.`);
+            this.logToAudit(`[BLOCKED-COOLDOWN] Device: ${deviceId} | Cooldown active for another ${minutesLeft} mins`);
+            return;
+        }
+
         if (this.healingDevices.has(deviceId)) {
             logger.info(`[Telemetry Alert] Alert received for ${deviceId} but device is already undergoing healing.`);
+            return;
+        }
+
+    
+        let history = this.triggerHistory.get(deviceId) || [];
+        history = history.filter(ts => now - ts < 600000); 
+        history.push(now);
+        this.triggerHistory.set(deviceId, history);
+
+        if (history.length > 3) {
+            this.blockedUntil.set(deviceId, now + 900000); 
+            logger.error(`[AutoHealer Cooldown] CRITICAL: Device ${deviceId} triggered healing ${history.length} times in less than 10 minutes. Activating 15-minute cooldown to prevent remediation loop.`);
+            this.logToAudit(`[ACTIVATED-COOLDOWN] Device: ${deviceId} | Blocked for 15 mins due to repetitive triggers.`);
             return;
         }
 
