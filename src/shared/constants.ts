@@ -14,7 +14,7 @@ export const IOS_ERROR_PATTERNS = [
 ];
 
 
-export const PROMPT_REGEX = /(?:^|[\r\n])\s*([A-Za-z0-9_\-@\.:\(\)/\\<\[]+(?:>|#|\$|\]))\s*$/;
+export const PROMPT_REGEX = /(?:^|[\r\n])\s*([A-Za-z0-9_\-@\.:\(\)/\\\[]+(?:>|#|\$|\]))\s*$/;
 
 
 export const MORE_REGEX = /(?:--\s*More\s*--|---\s*\(more\)\s*---|---- More ----|Press any key to continue|Press SPACE to continue)/i;
