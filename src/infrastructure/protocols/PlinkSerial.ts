@@ -59,7 +59,7 @@ export class PlinkSerialSession extends BaseSession {
                 });
                 response.data.pipe(writer);
                 await new Promise<void>((resolveWrite, rejectWrite) => {
-                    writer.on('finish', () => resolveWrite());
+                    writer.on('close', () => resolveWrite());
                     writer.on('error', (err) => rejectWrite(err));
                 });
                 spinner.succeed(`[Plink Installer] plink.exe successfully downloaded to ${targetPath}`);

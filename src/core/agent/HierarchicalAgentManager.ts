@@ -1,4 +1,4 @@
-export type NetworkAgentRole = 'CORE' | 'DISTRIBUTION' | 'ACCESS';
+export type NetworkAgentRole = 'CORE' | 'DISTRIBUTION' | 'ACCESS' | 'DATACENTER';
 
 export interface SpecializedAgent {
     role: NetworkAgentRole;
@@ -19,6 +19,21 @@ export class HierarchicalAgentManager {
                 /^show\s+ip\s+route/i,
                 /^show\s+ip\s+ospf/i,
                 /^show\s+ip\s+bgp/i
+            ]
+        },
+        {
+            role: 'DATACENTER',
+            description: 'Handles Data Center Leaf-Spine Fabrics, VXLAN EVPN overlays, vPC peer domains, and Nexus NX-OS specific features.',
+            allowedPattern: [
+                /^(no\s+)?feature\s+/i,
+                /^(no\s+)?vpc\s+domain\s+/i,
+                /^(no\s+)?peer-keepalive\s+/i,
+                /^(no\s+)?vn-segment\s+/i,
+                /^(no\s+)?interface\s+nve\s+/i,
+                /^(no\s+)?member\s+vni\s+/i,
+                /^(no\s+)?vrf\s+context\s+/i,
+                /^(no\s+)?address-family\s+l2vpn\s+evpn/i,
+                /^show\s+(vpc|nve|bgp\s+l2vpn\s+evpn)/i
             ]
         },
         {
@@ -70,8 +85,9 @@ export class HierarchicalAgentManager {
 
 
     public static getHierarchicalAgentPrompt(): string {
-        return `You are operating as a Hierarchical Network Swarm. Tasks are segregated into three agent layers:
+        return `You are operating as a Hierarchical Network Swarm. Tasks are segregated into four agent layers:
 - CORE AGENT (Core Routing, OSPF, BGP, Static Routes)
+- DATACENTER AGENT (Leaf-Spine fabrics, VXLAN EVPN overlays, vPC domains, NX-OS features)
 - DISTRIBUTION AGENT (VLANs, ACLs, Security policies, NAT)
 - ACCESS AGENT (User ports, Interfaces, Speed/Duplex, IP Assignment)
 

@@ -469,7 +469,7 @@ PlinkSerialSession.listAvailableComPorts().then(async (ports) => {
         assert.ok(protocolsOut.includes('Automatic network summarization is not in effect'), 'show ip protocols should report auto-summary state');
 
 
-        // Test EIGRP, VTP, HSRP, VRRP, ACLs, NAT, NTP, SNMP simulator support
+     
         sim.execute('configure terminal');
         sim.execute('router eigrp 100');
         assert.strictEqual(sim.mode, 'EIGRP_CONFIG', 'router eigrp should transition to EIGRP_CONFIG');
@@ -513,7 +513,7 @@ PlinkSerialSession.listAvailableComPorts().then(async (ports) => {
         assert.strictEqual(gi01.natType, 'inside', 'nat inside should be set');
         sim.execute('end');
 
-        // Test show commands
+
         const vtpOut = sim.execute('show vtp status');
         assert.ok(vtpOut.includes('VTP Operating Mode                 : client'), 'show vtp status should show Mode client');
 
@@ -535,6 +535,62 @@ PlinkSerialSession.listAvailableComPorts().then(async (ports) => {
         const newProtocolsOut = sim.execute('show ip protocols');
         assert.ok(newProtocolsOut.includes('Routing Protocol is "eigrp 100"'), 'show ip protocols should contain eigrp');
 
+
+        sim.execute('configure terminal');
+        sim.execute('feature vpc');
+        sim.execute('feature nv overlay');
+        assert.ok((sim as any).featuresEnabled.has('vpc'), 'feature vpc should be enabled');
+        assert.ok((sim as any).featuresEnabled.has('nv overlay'), 'feature nv overlay should be enabled');
+
+        sim.execute('vpc domain 10');
+        assert.strictEqual(sim.mode, 'VPC_CONFIG', 'vpc domain should transition to VPC_CONFIG');
+        sim.execute('peer-keepalive destination 192.168.1.2 source 192.168.1.1');
+        assert.strictEqual((sim as any).vpcDomainId, 10, 'vpcDomainId should be set');
+        assert.ok((sim as any).vpcPeerKeepalive.includes('destination 192.168.1.2'), 'vpcPeerKeepalive should be set');
+        sim.execute('exit');
+
+        sim.execute('vrf context tenantA');
+        assert.strictEqual(sim.mode, 'VRF_CONFIG', 'vrf context should transition to VRF_CONFIG');
+        sim.execute('vni 50000');
+        sim.execute('rd 1:1');
+        const vrfState = (sim as any).vrfs.get('tenantA')!;
+        assert.strictEqual(vrfState.vni, 50000, 'VRF VNI should be set');
+        assert.strictEqual(vrfState.rd, '1:1', 'VRF RD should be set');
+
+        sim.execute('address-family ipv4 unicast');
+        assert.strictEqual(sim.mode, 'VRF_AF_CONFIG', 'address-family in VRF should transition to VRF_AF_CONFIG');
+        sim.execute('route-target both auto evpn');
+        assert.ok(vrfState.routeTargets.includes('both auto evpn'), 'VRF route target should be set');
+        sim.execute('exit');
+        sim.execute('exit');
+
+        sim.execute('vlan 10');
+        sim.execute('vn-segment 10010');
+        assert.strictEqual((sim as any).vnSegments.get(10), 10010, 'vn-segment mapping should be set');
+        sim.execute('exit');
+
+        sim.execute('interface nve1');
+        sim.execute('source-interface Loopback0');
+        sim.execute('member vni 10010 mcast-group 239.1.1.10');
+        const nve = (sim as any).interfaces.get('Nve1')!;
+        assert.strictEqual(nve.sourceInterface, 'Loopback0', 'NVE source interface should be set');
+        assert.ok(nve.memberVnis.has(10010), 'NVE VNI membership should be registered');
+        sim.execute('end');
+
+
+        const vpcOut = sim.execute('show vpc');
+        assert.ok(vpcOut.includes('vPC domain id                     : 10'), 'show vpc should display domain ID');
+        assert.ok(vpcOut.includes('peer adjacency formed ok'), 'show vpc should display peer status');
+
+        const nveIntOut = sim.execute('show nve interface');
+        assert.ok(nveIntOut.includes('Interface: Nve1'), 'show nve interface should show interface name');
+        assert.ok(nveIntOut.includes('Source-Interface: Loopback0'), 'show nve interface should show source loopback');
+
+        const nveVniOut = sim.execute('show nve vni');
+        assert.ok(nveVniOut.includes('Nve1') && nveVniOut.includes('10010'), 'show nve vni should show VNI configuration');
+
+        const bgpEvpnOut = sim.execute('show bgp l2vpn evpn summary');
+        assert.ok(bgpEvpnOut.includes('address family L2VPN EVPN'), 'show bgp summary should mention address family');
 
         const dummyTopology = { devices: [], links: [] } as any;
         const routeValidation1 = PreExecutionValidator.validateCommand('no ip route 192.168.1.0 255.255.255.0', '192.168.1.254', dummyTopology, null);

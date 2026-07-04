@@ -3,7 +3,7 @@ import { EventEmitter } from 'events';
 
 export const simulatorEvents = new EventEmitter();
 
-export type CliMode = 'USER_EXEC' | 'PRIVILEGED_EXEC' | 'GLOBAL_CONFIG' | 'INTERFACE_CONFIG' | 'OSPF_CONFIG' | 'RIP_CONFIG' | 'BGP_CONFIG' | 'EIGRP_CONFIG' | 'DHCP_CONFIG' | 'ACL_CONFIG' | 'VLAN_CONFIG';
+export type CliMode = 'USER_EXEC' | 'PRIVILEGED_EXEC' | 'GLOBAL_CONFIG' | 'INTERFACE_CONFIG' | 'OSPF_CONFIG' | 'RIP_CONFIG' | 'BGP_CONFIG' | 'EIGRP_CONFIG' | 'DHCP_CONFIG' | 'ACL_CONFIG' | 'VLAN_CONFIG' | 'VPC_CONFIG' | 'VRF_CONFIG' | 'VRF_AF_CONFIG';
 
 export interface InterfaceState {
     name: string;
@@ -16,6 +16,9 @@ export interface InterfaceState {
     switchportMode?: 'access' | 'trunk';
     vlan?: number;
     natType?: 'inside' | 'outside';
+    vpcMemberId?: number;
+    sourceInterface?: string;
+    memberVnis?: Map<number, { mcastGroup?: string; associateVrf?: boolean }>;
 }
 
 export interface RouteState {
@@ -98,6 +101,14 @@ export class ShellSimulator {
     public natRules: string[] = [];
     public acls: Map<string, string[]> = new Map();
     public ipRoutingEnabled: boolean = true;
+
+
+    public featuresEnabled: Set<string> = new Set();
+    public vpcDomainId: number | null = null;
+    public vpcPeerKeepalive: string | null = null;
+    public vnSegments: Map<number, number> = new Map();
+    public vrfs: Map<string, { vni?: number; rd?: string; routeTargets: string[] }> = new Map();
+    public activeVrf: string | null = null;
     public flashFiles: Set<string> = new Set(['c2960-lanbasek9-mz.150-2.SE4.bin']);
     private pendingCopyDest: string | null = null;
     private backupState: {
@@ -162,6 +173,12 @@ export class ShellSimulator {
                 return `${this.hostname}(config-ext-nacl)# `;
             case 'VLAN_CONFIG':
                 return `${this.hostname}(config-vlan)# `;
+            case 'VPC_CONFIG':
+                return `${this.hostname}(config-vpc-domain)# `;
+            case 'VRF_CONFIG':
+                return `${this.hostname}(config-vrf)# `;
+            case 'VRF_AF_CONFIG':
+                return `${this.hostname}(config-vrf-af-ipv4)# `;
             default:
                 return `${this.hostname}# `;
         }
@@ -213,6 +230,8 @@ export class ShellSimulator {
 
         const args = commandToExecute.split(/\s+/);
         const cmd = args[0].toLowerCase();
+
+        const isShow = cmd === 'show' || cmd === 'sh' || (cmd === 'do' && (args[1]?.toLowerCase() === 'show' || args[1]?.toLowerCase() === 'sh'));
 
         if (cmd === '?' || cmd === 'help') {
             if (cmd === 'help') {
@@ -273,10 +292,14 @@ show the available options.`;
 
 
         if (cmd === 'exit') {
-            if (this.mode === 'INTERFACE_CONFIG' || this.mode === 'OSPF_CONFIG' || this.mode === 'RIP_CONFIG' || this.mode === 'BGP_CONFIG' || this.mode === 'EIGRP_CONFIG' || this.mode === 'DHCP_CONFIG' || this.mode === 'ACL_CONFIG' || this.mode === 'VLAN_CONFIG') {
+            if (this.mode === 'INTERFACE_CONFIG' || this.mode === 'OSPF_CONFIG' || this.mode === 'RIP_CONFIG' || this.mode === 'BGP_CONFIG' || this.mode === 'EIGRP_CONFIG' || this.mode === 'DHCP_CONFIG' || this.mode === 'ACL_CONFIG' || this.mode === 'VLAN_CONFIG' || this.mode === 'VPC_CONFIG' || this.mode === 'VRF_CONFIG') {
                 this.mode = 'GLOBAL_CONFIG';
                 this.activeInterface = null;
                 this.activeVlan = null;
+                this.activeVrf = null;
+                return '';
+            } else if (this.mode === 'VRF_AF_CONFIG') {
+                this.mode = 'VRF_CONFIG';
                 return '';
             } else if (this.mode === 'GLOBAL_CONFIG') {
                 this.mode = 'PRIVILEGED_EXEC';
@@ -294,6 +317,7 @@ show the available options.`;
                 this.mode = 'PRIVILEGED_EXEC';
                 this.activeInterface = null;
                 this.activeVlan = null;
+                this.activeVrf = null;
                 return '';
             }
         }
@@ -344,7 +368,40 @@ show the available options.`;
         }
 
 
-        if (this.mode === 'GLOBAL_CONFIG') {
+        const isGeneralCommand = isShow || cmd === 'ping' || cmd === 'write' || cmd === 'wr' || cmd === 'copy' || cmd === 'dir' || cmd === 'test';
+
+        if (this.mode === 'GLOBAL_CONFIG' && !isGeneralCommand) {
+            if (cmd === 'feature' && args[1]) {
+                const featureName = args.slice(1).join(' ').toLowerCase();
+                this.featuresEnabled.add(featureName);
+                return '';
+            }
+
+            if (cmd === 'no' && args[1] === 'feature' && args[2]) {
+                const featureName = args.slice(2).join(' ').toLowerCase();
+                this.featuresEnabled.delete(featureName);
+                return '';
+            }
+
+            if (cmd === 'vpc' && args[1] === 'domain' && args[2]) {
+                const domainId = parseInt(args[2], 10);
+                if (!isNaN(domainId)) {
+                    this.vpcDomainId = domainId;
+                    this.mode = 'VPC_CONFIG';
+                    return '';
+                }
+            }
+
+            if (cmd === 'vrf' && args[1] === 'context' && args[2]) {
+                const vrfName = args[2];
+                this.activeVrf = vrfName;
+                if (!this.vrfs.has(vrfName)) {
+                    this.vrfs.set(vrfName, { routeTargets: [] });
+                }
+                this.mode = 'VRF_CONFIG';
+                return '';
+            }
+
             if (cmd === 'hostname' && args[1]) {
                 this.hostname = args[1];
                 return '';
@@ -542,7 +599,7 @@ show the available options.`;
         }
 
 
-        if (this.mode === 'VLAN_CONFIG' && this.activeVlan !== null) {
+        if (this.mode === 'VLAN_CONFIG' && this.activeVlan !== null && !isGeneralCommand) {
             if (cmd === 'name' && args[1]) {
                 this.vlanNames.set(this.activeVlan, args.slice(1).join(' '));
                 return '';
@@ -551,11 +608,44 @@ show the available options.`;
                 this.vlanNames.set(this.activeVlan, `VLAN${this.activeVlan.toString().padStart(4, '0')}`);
                 return '';
             }
+            if (cmd === 'vn-segment' && args[1]) {
+                const vni = parseInt(args[1], 10);
+                if (!isNaN(vni)) {
+                    this.vnSegments.set(this.activeVlan, vni);
+                    return '';
+                }
+            }
             return `% Invalid input detected at '^' marker.`;
         }
 
-        if (this.mode === 'INTERFACE_CONFIG' && this.activeInterface) {
+        if (this.mode === 'INTERFACE_CONFIG' && this.activeInterface && !isGeneralCommand) {
             const iface = this.interfaces.get(this.activeInterface)!;
+
+            if (cmd === 'vpc' && args[1]) {
+                const vpcId = parseInt(args[1], 10);
+                if (!isNaN(vpcId)) {
+                    iface.vpcMemberId = vpcId;
+                    return '';
+                }
+            }
+
+            if (cmd === 'source-interface' && args[1]) {
+                iface.sourceInterface = args[1];
+                return '';
+            }
+
+            if (cmd === 'member' && args[1] === 'vni' && args[2]) {
+                const vni = parseInt(args[2], 10);
+                if (!isNaN(vni)) {
+                    if (!iface.memberVnis) {
+                        iface.memberVnis = new Map();
+                    }
+                    const mcastGroup = args[3] === 'mcast-group' ? args[4] : undefined;
+                    const associateVrf = args.includes('associate-vrf');
+                    iface.memberVnis.set(vni, { mcastGroup, associateVrf });
+                    return '';
+                }
+            }
 
             if (cmd === 'shutdown') {
                 iface.adminShutdown = true;
@@ -701,7 +791,7 @@ show the available options.`;
             return `% Invalid input detected at '^' marker.`;
         }
 
-        if (this.mode === 'OSPF_CONFIG') {
+        if (this.mode === 'OSPF_CONFIG' && !isGeneralCommand) {
             if (cmd === 'network' || cmd === 'router-id') {
                 return '';
             }
@@ -711,7 +801,7 @@ show the available options.`;
             return `% Invalid input detected at '^' marker.`;
         }
 
-        if (this.mode === 'RIP_CONFIG') {
+        if (this.mode === 'RIP_CONFIG' && !isGeneralCommand) {
             if (cmd === 'version' && (args[1] === '1' || args[1] === '2')) {
                 this.ripVersion = parseInt(args[1], 10);
                 return '';
@@ -733,7 +823,7 @@ show the available options.`;
             return `% Invalid input detected at '^' marker.`;
         }
 
-        if (this.mode === 'BGP_CONFIG') {
+        if (this.mode === 'BGP_CONFIG' && !isGeneralCommand) {
             if (cmd === 'neighbor' && args[1]) {
                 return '';
             }
@@ -749,10 +839,53 @@ show the available options.`;
             if (cmd === 'auto-summary') {
                 return '';
             }
+            if (cmd === 'address-family' && args[1] === 'l2vpn' && args[2] === 'evpn') {
+                return '';
+            }
+            if (cmd === 'send-community') {
+                return '';
+            }
             return `% Invalid input detected at '^' marker.`;
         }
 
-        if (this.mode === 'EIGRP_CONFIG') {
+        if (this.mode === 'VPC_CONFIG' && !isGeneralCommand) {
+            if (cmd === 'peer-keepalive' && args[1] === 'destination') {
+                this.vpcPeerKeepalive = commandToExecute;
+                return '';
+            }
+            if (cmd === 'system-priority' || cmd === 'role' || cmd === 'peer-gateway' || cmd === 'peer-switch') {
+                return '';
+            }
+            return `% Invalid input detected at '^' marker.`;
+        }
+
+        if (this.mode === 'VRF_CONFIG' && this.activeVrf && !isGeneralCommand) {
+            const vrf = this.vrfs.get(this.activeVrf)!;
+            if (cmd === 'vni' && args[1]) {
+                vrf.vni = parseInt(args[1], 10);
+                return '';
+            }
+            if (cmd === 'rd' && args[1]) {
+                vrf.rd = args.slice(1).join(' ');
+                return '';
+            }
+            if (cmd === 'address-family' && args[1] === 'ipv4' && args[2] === 'unicast') {
+                this.mode = 'VRF_AF_CONFIG';
+                return '';
+            }
+            return `% Invalid input detected at '^' marker.`;
+        }
+
+        if (this.mode === 'VRF_AF_CONFIG' && this.activeVrf && !isGeneralCommand) {
+            const vrf = this.vrfs.get(this.activeVrf)!;
+            if (cmd === 'route-target' && args[1] === 'both' && args[2]) {
+                vrf.routeTargets.push(args.slice(1).join(' '));
+                return '';
+            }
+            return `% Invalid input detected at '^' marker.`;
+        }
+
+        if (this.mode === 'EIGRP_CONFIG' && !isGeneralCommand) {
             if (cmd === 'network' && args[1]) {
                 return '';
             }
@@ -768,14 +901,14 @@ show the available options.`;
             return `% Invalid input detected at '^' marker.`;
         }
 
-        if (this.mode === 'DHCP_CONFIG') {
+        if (this.mode === 'DHCP_CONFIG' && !isGeneralCommand) {
             if (cmd === 'network' || cmd === 'default-router' || cmd === 'dns-server') {
                 return '';
             }
             return `% Invalid input detected at '^' marker.`;
         }
 
-        if (this.mode === 'ACL_CONFIG') {
+        if (this.mode === 'ACL_CONFIG' && !isGeneralCommand) {
             if (cmd === 'permit' || cmd === 'deny') {
                 return '';
             }
@@ -785,10 +918,63 @@ show the available options.`;
 
 
 
-        const isShow = cmd === 'show' || cmd === 'sh' || (cmd === 'do' && (args[1]?.toLowerCase() === 'show' || args[1]?.toLowerCase() === 'sh'));
         if (isShow) {
             const showArgs = cmd === 'do' ? args.slice(2) : args.slice(1);
             const showCmd = showArgs[0]?.toLowerCase();
+
+            if (showCmd === 'vpc') {
+                const domainId = this.vpcDomainId || 10;
+                const peerStatus = this.vpcPeerKeepalive ? 'peer adjacency formed ok' : 'peer link not configured';
+                const keepaliveStatus = this.vpcPeerKeepalive ? 'peer is alive' : 'peer keep-alive not configured';
+                return `Legend:
+                (*) - local vPC is down, dynamic backup loop preventer
+
+vPC domain id                     : ${domainId}
+Peer status                       : ${peerStatus}
+vPC keep-alive status             : ${keepaliveStatus}
+Configuration-consistency status  : success 
+Per-vlan consistency status       : success 
+Type-2 consistency status         : success 
+vPC role                          : primary                       
+Number of vPCs configured         : ${Array.from(this.interfaces.values()).filter(i => i.vpcMemberId !== undefined).length}
+Peer Gateway                      : Enabled
+`;
+            }
+
+            if (showCmd === 'nve' && showArgs[1] === 'interface') {
+                const nveIface = Array.from(this.interfaces.values()).find(i => i.name.toLowerCase().startsWith('nve'));
+                if (!nveIface) {
+                    return '% NVE interface is not configured';
+                }
+                const sourceInt = nveIface.sourceInterface || 'Loopback0';
+                return `Interface: ${nveIface.name}, State: Up, Encapsulation: VXLAN
+Source-Interface: ${sourceInt} (10.0.0.1)
+`;
+            }
+
+            if (showCmd === 'nve' && showArgs[1] === 'vni') {
+                const nveIface = Array.from(this.interfaces.values()).find(i => i.name.toLowerCase().startsWith('nve'));
+                if (!nveIface || !nveIface.memberVnis) {
+                    return `Interface VNI      Multicast-group   State Mode vPC Dev\n` +
+                           `--------- -------- ----------------- ----- ---- -------\n`;
+                }
+                let out = `Interface VNI      Multicast-group   State Mode vPC Dev\n` +
+                          `--------- -------- ----------------- ----- ---- -------\n`;
+                for (const [vni, details] of nveIface.memberVnis.entries()) {
+                    const mcast = details.mcastGroup || 'n/a';
+                    out += `${nveIface.name.padEnd(9)} ${vni.toString().padEnd(8)} ${mcast.padEnd(17)} Up    CP   n/a\n`;
+                }
+                return out;
+            }
+
+            if (showCmd === 'bgp' && showArgs[1] === 'l2vpn' && showArgs[2] === 'evpn' && showArgs[3] === 'summary') {
+                const bgpAs = this.bgpAsn || '65000';
+                return `BGP summary information for VRF default, address family L2VPN EVPN
+BGP router identifier 10.0.0.1, local AS number ${bgpAs}
+Neighbor        V    AS MsgRcvd MsgSent   TblVer  InQ OutQ Up/Down  State/PfxRcd
+10.0.0.2        4 ${bgpAs}     120     125       47    0    0 01:24:55 2
+`;
+            }
 
             if (showCmd === 'version' || showCmd === 'ver') {
                 return `Cisco IOS Software, C2960 Software (C2960-LANBASEK9-M), Version 15.0(2)SE4, RELEASE SOFTWARE (fc1)
@@ -1154,6 +1340,21 @@ Success rate is 100 percent (5/5), round-trip min/avg/max = 1/1/4 ms
         if (lower.startsWith('vl')) {
             return 'Vlan' + name.substring(2);
         }
+        if (lower.startsWith('ethernet')) {
+            return 'Ethernet' + name.substring(8);
+        }
+        if (lower.startsWith('eth')) {
+            return 'Ethernet' + name.substring(3);
+        }
+        if (lower.startsWith('port-channel')) {
+            return 'Port-channel' + name.substring(12);
+        }
+        if (lower.startsWith('po')) {
+            return 'Port-channel' + name.substring(2);
+        }
+        if (lower.startsWith('nve')) {
+            return 'Nve' + name.substring(3);
+        }
         return name;
     }
 
@@ -1162,7 +1363,10 @@ Success rate is 100 percent (5/5), round-trip min/avg/max = 1/1/4 ms
             .replace('GigabitEthernet', 'Gi')
             .replace('FastEthernet', 'Fa')
             .replace('TenGigabitEthernet', 'Te')
-            .replace('Loopback', 'Lo');
+            .replace('Loopback', 'Lo')
+            .replace('Ethernet', 'Eth')
+            .replace('Port-channel', 'Po')
+            .replace('Nve', 'Nve');
     }
 
     private getPrefixLength(mask: string): number {

@@ -96,6 +96,11 @@ export class CommandFirewall {
             if (parts[1] && parts[1].toLowerCase().startsWith('new') && 'new-model'.startsWith(parts[1].toLowerCase())) {
                 parts[1] = 'new-model';
             }
+        } else if (firstToken === 'feature') {
+            const rest = parts.slice(1).join(' ').toLowerCase();
+            if (rest === 'nv-overlay' || rest === 'nv_overlay') {
+                return 'feature nv overlay';
+            }
         }
 
         return parts.join(' ');
@@ -117,6 +122,15 @@ export class CommandFirewall {
         }
         if (lower.startsWith('lo') && !lower.startsWith('loopback')) {
             return 'loopback' + name.substring(2);
+        }
+        if (lower.startsWith('eth') && !lower.startsWith('ethernet')) {
+            return 'ethernet' + name.substring(3);
+        }
+        if (lower.startsWith('po') && !lower.startsWith('port-channel')) {
+            return 'port-channel' + name.substring(2);
+        }
+        if (lower.startsWith('nv') && !lower.startsWith('nve')) {
+            return 'nve' + name.substring(2);
         }
         return name;
     }
