@@ -130,7 +130,7 @@ export class LLMClient {
             messages: messages,
             tools: tools,
             tool_choice: 'auto',
-            temperature: 0.1,
+            temperature: 0.0,
             max_tokens: 1500
         }, { headers });
 
@@ -183,7 +183,7 @@ export class LLMClient {
             messages: messages,
             tools: tools,
             tool_choice: 'auto',
-            temperature: 0.1,
+            temperature: 0.0,
             max_tokens: 1500,
             stream: true,
             stream_options: { include_usage: true }
@@ -372,8 +372,86 @@ export class LLMClient {
 
     private fallbackRegexToolParsing(message: ChatMessage): void {
         const content = message.content;
-        const paramRegex = /<parameter=(\w+)>\s*([\s\S]*?)\s*<\/parameter>/g;
+        if (!content) return;
+
         const args: Record<string, any> = {};
+        let toolName = 'execute_ios_command';
+
+        // 1. Try to find a JSON block in markdown
+        const jsonBlockRegex = /```json\s*([\s\S]*?)\s*```/i;
+        const jsonMatch = jsonBlockRegex.exec(content) || /(\{[\s\S]*?\})/.exec(content);
+        if (jsonMatch) {
+            try {
+                const parsed = JSON.parse(jsonMatch[1].trim());
+                // Check if it's formatted as standard OpenAI tool call
+                if (parsed.function && typeof parsed.function === 'object') {
+                    const funcName = parsed.function.name;
+                    const funcArgs = typeof parsed.function.arguments === 'string' 
+                        ? JSON.parse(parsed.function.arguments) 
+                        : parsed.function.arguments;
+                    if (funcName && funcArgs) {
+                        message.tool_calls = [{
+                            id: `parsed_${Math.random().toString(36).substring(2, 11)}`,
+                            type: 'function',
+                            function: {
+                                name: funcName,
+                                arguments: JSON.stringify(funcArgs)
+                            }
+                        }];
+                        return;
+                    }
+                }
+                
+                // Or if it's a direct dictionary of parameters
+                if (parsed.command) {
+                    args.command = parsed.command;
+                    if (parsed.device) args.device = parsed.device;
+                    toolName = 'execute_ios_command';
+                } else if (parsed.destination) {
+                    args.destination = parsed.destination;
+                    if (parsed.device) args.device = parsed.device;
+                    toolName = 'ping_test';
+                } else if (parsed.mode) {
+                    args.mode = parsed.mode;
+                    if (parsed.device) args.device = parsed.device;
+                    toolName = 'enable_ios_shell';
+                } else if (parsed.name && parsed.value) {
+                    args.name = parsed.name;
+                    args.value = parsed.value;
+                    if (parsed.device) args.device = parsed.device;
+                    toolName = 'define_shell_variable';
+                } else if (parsed.variable && parsed.items && parsed.command) {
+                    args.variable = parsed.variable;
+                    args.items = parsed.items;
+                    args.command = parsed.command;
+                    if (parsed.device) args.device = parsed.device;
+                    toolName = 'execute_shell_loop';
+                } else if (parsed.name && parsed.body) {
+                    args.name = parsed.name;
+                    args.body = parsed.body;
+                    if (parsed.device) args.device = parsed.device;
+                    toolName = 'define_shell_function';
+                }
+
+                // If we extracted args from direct JSON
+                if (Object.keys(args).length > 0) {
+                    message.tool_calls = [{
+                        id: `parsed_${Math.random().toString(36).substring(2, 11)}`,
+                        type: 'function',
+                        function: {
+                            name: toolName,
+                            arguments: JSON.stringify(args)
+                        }
+                    }];
+                    return;
+                }
+            } catch (e) {
+                // Ignore JSON parsing errors and proceed to XML/Parameter parsing fallback
+            }
+        }
+
+        // 2. Try XML parameter-based parsing
+        const paramRegex = /<parameter=(\w+)>\s*([\s\S]*?)\s*<\/parameter>/g;
         let match;
         while ((match = paramRegex.exec(content)) !== null) {
             const key = match[1];
@@ -381,8 +459,22 @@ export class LLMClient {
             args[key] = val;
         }
 
+        // Try direct XML tags like <execute_ios_command>show ip route</execute_ios_command>
+        const xmlCommandRegex = /<execute_ios_command>\s*([\s\S]*?)\s*<\/execute_ios_command>/i;
+        const xmlCommandMatch = xmlCommandRegex.exec(content);
+        if (xmlCommandMatch) {
+            args['command'] = xmlCommandMatch[1].trim();
+            toolName = 'execute_ios_command';
+        }
+
+        const xmlPingRegex = /<ping_test>\s*([\s\S]*?)\s*<\/ping_test>/i;
+        const xmlPingMatch = xmlPingRegex.exec(content);
+        if (xmlPingMatch) {
+            args['destination'] = xmlPingMatch[1].trim();
+            toolName = 'ping_test';
+        }
+
         if (Object.keys(args).length > 0) {
-            let toolName = 'execute_ios_command';
             if ('destination' in args) {
                 toolName = 'ping_test';
             } else if ('mode' in args) {

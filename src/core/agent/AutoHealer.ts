@@ -24,6 +24,8 @@ export class AutoHealer {
     private firewall = new CommandFirewall();
     private triggerHistory = new Map<string, number[]>(); 
     private blockedUntil = new Map<string, number>(); 
+    private cacheFilePath: string;
+    private dynamicCache: any[] = [];
 
     constructor(
         private llmClient: LLMClient,
@@ -36,6 +38,8 @@ export class AutoHealer {
         if (this.nonInteractive) {
             process.env.CISCOLLM_NON_INTERACTIVE = 'true';
         }
+        this.cacheFilePath = path.resolve(process.cwd(), '.cache/auto_healing_cache.json');
+        this.loadCache();
     }
 
     public start(): void {
@@ -98,9 +102,14 @@ export class AutoHealer {
             spinner.info(`Diagnostic context gathered (${context.commandsRun.length} commands).`);
 
            
-            const decideSpinner = createSpinner('OODA Loop (Decide): Querying AI for Root Cause & Remediation...').start();
-            const diagnosis = await this.diagnose(deviceId, msg, context.outputs);
-            decideSpinner.succeed('Root Cause Analysis completed.');
+            const decideSpinner = createSpinner('OODA Loop (Decide): Querying AI (or cache) for Root Cause & Remediation...').start();
+            let diagnosis = this.tryCacheLookup(msg);
+            if (diagnosis) {
+                decideSpinner.succeed('Root Cause Analysis retrieved from cache.');
+            } else {
+                diagnosis = await this.diagnose(deviceId, msg, context.outputs);
+                decideSpinner.succeed('Root Cause Analysis completed.');
+            }
 
             logger.diamond(`AI Detected Issue: ${chalk.white.bold(diagnosis.detected_issue)}`);
             logger.diamond(`AI Root Cause: ${chalk.gray.italic(diagnosis.root_cause)}`);
@@ -248,6 +257,7 @@ export class AutoHealer {
             if (isHealed) {
                 verifySpinner.succeed('Verification PASSED: Device recovered successfully.');
                 this.logToAudit(`[SUCCESS] Device: ${deviceId} | Issue: ${diagnosis.detected_issue} | Remediation: ${appliedCommands.join(', ')}`);
+                this.cacheSuccessfulHealing(msg, diagnosis);
             } else {
                 verifySpinner.fail('Verification FAILED: The issue is not fully resolved. Triggering rollback...');
                 const rbLogs = await tx.executeRollback(session);
@@ -394,5 +404,110 @@ Your response MUST end with either "SUCCESS" or "FAILED". Do not output any othe
         } catch (e) {
             console.error(`Failed to write to healing audit log:`, e);
         }
+    }
+
+    private loadCache(): void {
+        try {
+            const dir = path.dirname(this.cacheFilePath);
+            if (!fs.existsSync(dir)) {
+                fs.mkdirSync(dir, { recursive: true });
+            }
+            if (fs.existsSync(this.cacheFilePath)) {
+                const raw = fs.readFileSync(this.cacheFilePath, 'utf8');
+                this.dynamicCache = JSON.parse(raw);
+            }
+        } catch (e: any) {
+            logger.warn(`Failed to load auto-healing cache: ${e.message}`);
+        }
+    }
+
+    private saveCache(): void {
+        try {
+            const dir = path.dirname(this.cacheFilePath);
+            if (!fs.existsSync(dir)) {
+                fs.mkdirSync(dir, { recursive: true });
+            }
+            fs.writeFileSync(this.cacheFilePath, JSON.stringify(this.dynamicCache, null, 2), 'utf8');
+        } catch (e: any) {
+            logger.warn(`Failed to save auto-healing cache: ${e.message}`);
+        }
+    }
+
+    public tryCacheLookup(syslog: string): {
+        detected_issue: string;
+        root_cause: string;
+        confidence: number;
+        remediation_commands: string[];
+        verification_commands: string[];
+    } | null {
+
+        const staticTemplates = [
+            {
+                regex: /%LINK-3-UPDOWN:\s*Interface\s+(\S+?)(?:,|\s+changed|$)/i,
+                detected_issue: 'Physical interface link down',
+                root_cause: 'Interface state transition to down',
+                confidence: 0.98,
+                remediation_commands: ['configure terminal', 'interface $1', 'no shutdown', 'end'],
+                verification_commands: ['show ip interface brief']
+            },
+            {
+                regex: /%LINEPROTO-5-UPDOWN:\s*Line\s+protocol\s+on\s+Interface\s+(\S+?)(?:,|\s+changed|$)/i,
+                detected_issue: 'Line protocol down',
+                root_cause: 'Line protocol state transition to down',
+                confidence: 0.98,
+                remediation_commands: ['configure terminal', 'interface $1', 'no shutdown', 'end'],
+                verification_commands: ['show ip interface brief']
+            }
+        ];
+
+        for (const tmpl of staticTemplates) {
+            const match = tmpl.regex.exec(syslog);
+            if (match) {
+                const var1 = match[1];
+                const remediation = tmpl.remediation_commands.map(cmd => cmd.replace(/\$1/g, var1));
+                const verification = tmpl.verification_commands.map(cmd => cmd.replace(/\$1/g, var1));
+                logger.info(`[AutoHealer Cache] Hit static regex template for syslog pattern.`);
+                return {
+                    detected_issue: tmpl.detected_issue,
+                    root_cause: tmpl.root_cause,
+                    confidence: tmpl.confidence,
+                    remediation_commands: remediation,
+                    verification_commands: verification
+                };
+            }
+        }
+
+
+        const trimmedSyslog = syslog.trim();
+        const found = this.dynamicCache.find((entry: any) => entry.pattern.trim() === trimmedSyslog);
+        if (found) {
+            logger.info(`[AutoHealer Cache] Hit dynamic cache for syslog: "${trimmedSyslog}"`);
+            return {
+                detected_issue: found.detected_issue,
+                root_cause: found.root_cause,
+                confidence: found.confidence,
+                remediation_commands: found.remediation_commands,
+                verification_commands: found.verification_commands
+            };
+        }
+
+        return null;
+    }
+
+    private cacheSuccessfulHealing(syslog: string, diagnosis: any): void {
+        const trimmedSyslog = syslog.trim();
+        const exists = this.dynamicCache.some((entry: any) => entry.pattern.trim() === trimmedSyslog);
+        if (exists) return;
+
+        this.dynamicCache.push({
+            pattern: trimmedSyslog,
+            detected_issue: diagnosis.detected_issue,
+            root_cause: diagnosis.root_cause,
+            confidence: diagnosis.confidence,
+            remediation_commands: diagnosis.remediation_commands,
+            verification_commands: diagnosis.verification_commands
+        });
+        this.saveCache();
+        logger.info(`[AutoHealer Cache] Cached successful healing plan for syslog: "${trimmedSyslog}"`);
     }
 }

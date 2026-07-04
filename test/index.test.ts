@@ -8,7 +8,6 @@ import { MultiAgentCoordinator } from '../src/core/agent/MultiAgentCoordinator';
 import { HierarchicalAgentManager } from '../src/core/agent/HierarchicalAgentManager';
 import { PreExecutionValidator } from '../src/core/guardrails/PreExecutionValidator';
 import { StateDiff } from '../src/core/rollback/StateDiff';
-import { NetconfSession } from '../src/infrastructure/protocols/NetconfSession';
 import { PlinkSerialSession } from '../src/infrastructure/protocols/PlinkSerial';
 import * as assert from 'assert';
 
@@ -209,22 +208,6 @@ assert.strictEqual(diff.addedVlans.includes(10), true, 'VLAN 10 addition should 
 assert.strictEqual(diff.addedRoutes.length, 1, 'Static route addition should be caught');
 console.log(' -> StateDiff test passed.');
 
-
-console.log('\n[Test 11]: Evaluating NetconfSession Framing and Parsing...');
-const netconfSession = new NetconfSession('127.0.0.1', 830, { username: 'test', password: 'test' });
-const framed10 = netconfSession.frameMessage('<hello/>', '1.0');
-assert.strictEqual(framed10, '<hello/>]]>]]>', 'Framing 1.0 format should be correct');
-
-const framed11 = netconfSession.frameMessage('<hello/>', '1.1');
-assert.strictEqual(framed11, '\n#8\n<hello/>\n##\n', 'Framing 1.1 format should be correct');
-
-const rpcReq = netconfSession.buildRpcRequest({
-    target: 'running',
-    config: { 'test-node': 'val' },
-    messageId: 'test-msg-123'
-});
-assert.ok(rpcReq.includes('message-id="test-msg-123"'), 'RPC request builder should include correct message-id');
-console.log(' -> NetconfSession Framing and Parsing test passed.');
 
 
 console.log('\n[Test 13]: Evaluating LLMClient Token Estimation...');

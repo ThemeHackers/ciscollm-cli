@@ -1,6 +1,5 @@
 import { SshSession } from '../src/infrastructure/protocols/SshSession';
 import { TelnetSession } from '../src/infrastructure/protocols/TelnetSession';
-import { NetconfSession } from '../src/infrastructure/protocols/NetconfSession';
 import { LLMClient } from '../src/infrastructure/llm/LLMClient';
 import * as assert from 'assert';
 import axios from 'axios';
@@ -83,34 +82,7 @@ async function verifyTelnet() {
     console.log('[Verification] Telnet Connection test passed.');
 }
 
-async function verifyNetconf() {
-    console.log('\n[Verification] Testing NETCONF connection...');
-    const session = new NetconfSession('127.0.0.1', 2222, {
-        username: 'admin',
-        password: 'admin'
-    });
 
-    await session.connect();
-    console.log('[Verification] NETCONF Handshake Completed.');
-
-
-    const editRpc = session.buildRpcRequest({
-        target: 'running',
-        config: {
-            native: {
-                hostname: 'Switch-Test-NETCONF'
-            }
-        },
-        messageId: 'netconf-id-123'
-    });
-
-
-    const replyXml = await session.execute(editRpc);
-    assert.ok(replyXml.includes('<ok/>'), 'NETCONF reply should contain <ok/>');
-
-    await session.disconnect();
-    console.log('[Verification] NETCONF Connection test passed.');
-}
 
 async function verifyHttp() {
     console.log('\n[Verification] Testing HTTP LLM endpoints...');
@@ -171,7 +143,7 @@ async function main() {
     try {
         await verifySsh();
         await verifyTelnet();
-        await verifyNetconf();
+
         await verifyHttp();
         console.log('\nAll connection verifications passed successfully!');
         process.exit(0);

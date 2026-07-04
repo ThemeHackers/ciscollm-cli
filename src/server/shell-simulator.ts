@@ -82,6 +82,7 @@ export class ShellSimulator {
 
     public ospfEnabled: boolean = false;
     public ospfProcessId: string | null = null;
+    public ospfNetworks: { network: string; wildcard: string; area: string }[] = [];
     public ripEnabled: boolean = false;
     public ripVersion: number = 2;
     public ripAutoSummary: boolean = false;
@@ -185,7 +186,12 @@ export class ShellSimulator {
     }
 
     public execute(line: string): string {
-        const trimmed = line.trim();
+        if (line.trim().endsWith('?')) {
+            return this.getContextHelp(line);
+        }
+
+        const normalizedLine = this.normalizeCommandString(line);
+        const trimmed = normalizedLine.trim();
 
         if (this.pendingCopyDest) {
             const dest = trimmed || this.pendingCopyDest;
@@ -792,6 +798,13 @@ show the available options.`;
         }
 
         if (this.mode === 'OSPF_CONFIG' && !isGeneralCommand) {
+            if (cmd === 'network' && args[1] && args[2] && args[3] === 'area' && args[4]) {
+                const network = args[1];
+                const wildcard = args[2];
+                const area = args[4];
+                this.ospfNetworks.push({ network, wildcard, area });
+                return '';
+            }
             if (cmd === 'network' || cmd === 'router-id') {
                 return '';
             }
@@ -1012,6 +1025,15 @@ This product contains cryptographic features and is subject to Y...
                     if (status.description) {
                         out += ` description ${status.description}\n`;
                     }
+                    if (status.isSwitchport) {
+                        out += ` switchport\n`;
+                        if (status.switchportMode) {
+                            out += ` switchport mode ${status.switchportMode}\n`;
+                        }
+                        if (status.vlan) {
+                            out += ` switchport access vlan ${status.vlan}\n`;
+                        }
+                    }
                     if (status.ip) {
                         out += ` ip address ${status.ip} ${status.subnet}\n`;
                     }
@@ -1023,6 +1045,12 @@ This product contains cryptographic features and is subject to Y...
                 for (const r of this.routes) {
                     if (!r.connected) {
                         out += `ip route ${r.network} ${r.mask} ${r.nextHop || r.outgoingInterface}\n`;
+                    }
+                }
+                if (this.ospfEnabled) {
+                    out += `router ospf ${this.ospfProcessId || '10'}\n`;
+                    for (const net of this.ospfNetworks) {
+                        out += ` network ${net.network} ${net.wildcard} area ${net.area}\n`;
                     }
                 }
                 out += `!\nend\n`;
@@ -1037,9 +1065,15 @@ This product contains cryptographic features and is subject to Y...
                            `  Incoming update filter list for all interfaces is not set\n` +
                            `  Router ID 192.168.1.254\n` +
                            `  Number of areas in this router is 1. 1 normal 0 stub 0 nssa\n` +
-                           `  Routing for Networks:\n` +
-                           `    192.168.1.0/24 area 0\n` +
-                           `  Routing Information Sources:\n` +
+                           `  Routing for Networks:\n`;
+                    if (this.ospfNetworks.length > 0) {
+                        for (const net of this.ospfNetworks) {
+                            out += `    ${net.network}/${this.getPrefixLength(this.wildcardToSubnet(net.wildcard))} area ${net.area}\n`;
+                        }
+                    } else {
+                        out += `    192.168.1.0/24 area 0\n`;
+                    }
+                    out += `  Routing Information Sources:\n` +
                            `    Gateway         Distance      Last Update\n` +
                            `  Distance: (default is 110)\n\n`;
                 }
@@ -1101,6 +1135,12 @@ This product contains cryptographic features and is subject to Y...
                 let out = `Codes: L - local, C - connected, S - static, R - RIP, M - mobile, B - BGP\n\n`;
                 out += `Gateway of last resort is not set\n\n`;
                 for (const r of this.routes) {
+                    if (r.connected && r.outgoingInterface) {
+                        const iface = this.interfaces.get(r.outgoingInterface);
+                        if (iface && iface.adminShutdown) {
+                            continue;
+                        }
+                    }
                     const code = r.connected ? 'C' : 'S';
                     const target = r.nextHop ? `via ${r.nextHop}` : `directly connected, ${r.outgoingInterface || 'Null0'}`;
                     out += `${code}        ${r.network}/${this.getPrefixLength(r.mask)} is ${target}\n`;
@@ -1302,6 +1342,154 @@ Success rate is 100 percent (5/5), round-trip min/avg/max = 1/1/4 ms
         return `% Unrecognized command: ${trimmed}`;
     }
 
+    private normalizeCommandString(line: string): string {
+        const trimmed = line.trim();
+        if (!trimmed) return '';
+
+        // If it starts with 'do ', we normalize the rest recursively
+        if (trimmed.toLowerCase().startsWith('do ')) {
+            const rest = trimmed.substring(3);
+            return 'do ' + this.normalizeCommandString(rest);
+        }
+
+        const parts = trimmed.split(/\s+/);
+        if (parts.length === 0 || !parts[0]) return trimmed;
+
+        let cmd = parts[0].toLowerCase();
+
+        // 1. First token abbreviation expansion
+        if (cmd === 'conf' || cmd === 'config' || cmd === 'configure') {
+            parts[0] = 'configure';
+            if (parts[1] && (parts[1].toLowerCase() === 't' || parts[1].toLowerCase() === 'term' || parts[1].toLowerCase() === 'terminal')) {
+                parts[1] = 'terminal';
+            }
+        } else if (cmd === 'int' || cmd === 'inter' || cmd === 'interface') {
+            parts[0] = 'interface';
+            if (parts[1]) {
+                parts[1] = this.normalizeInterfaceName(parts[1]);
+            }
+        } else if (cmd === 'sh' || cmd === 'sho' || cmd === 'show') {
+            parts[0] = 'show';
+        } else if (cmd === 'en' || cmd === 'ena' || cmd === 'enab' || cmd === 'enable') {
+            parts[0] = 'enable';
+        } else if (cmd === 'di' || cmd === 'dis' || cmd === 'disa' || cmd === 'disable') {
+            parts[0] = 'disable';
+        } else if (cmd === 'ex' || cmd === 'exi' || cmd === 'exit') {
+            parts[0] = 'exit';
+        } else if (cmd === 'end') {
+            parts[0] = 'end';
+        } else if (cmd === 'wr' || cmd === 'wri' || cmd === 'write') {
+            parts[0] = 'write';
+        } else if (cmd === 'p' || cmd === 'pi' || cmd === 'pin' || cmd === 'ping') {
+            parts[0] = 'ping';
+        } else if (cmd === 'net' || cmd === 'network') {
+            parts[0] = 'network';
+        } else if (cmd === 'sw' || cmd === 'swit' || cmd === 'switch' || cmd === 'switchport') {
+            parts[0] = 'switchport';
+        } else if (cmd === 'no') {
+            // Recurse for the remainder
+            if (parts.length > 1) {
+                const normalizedSub = this.normalizeCommandString(parts.slice(1).join(' '));
+                return 'no ' + normalizedSub;
+            }
+            return trimmed;
+        }
+
+        // 2. Sub-command expansion
+        cmd = parts[0].toLowerCase();
+        if (cmd === 'show') {
+            if (parts[1]) {
+                const sub = parts[1].toLowerCase();
+                if (sub === 'ru' || sub === 'run' || sub === 'runn' || sub === 'running' || sub === 'running-config') {
+                    parts[1] = 'running-config';
+                } else if (sub === 'vl' || sub === 'vla' || sub === 'vlan') {
+                    parts[1] = 'vlan';
+                } else if (sub === 'ip') {
+                    if (parts[2]) {
+                        const sub2 = parts[2].toLowerCase();
+                        if (sub2 === 'ro' || sub2 === 'rou' || sub2 === 'rout' || sub2 === 'route') {
+                            parts[2] = 'route';
+                        } else if (sub2 === 'int' || sub2 === 'inter' || sub2 === 'interface') {
+                            parts[2] = 'interface';
+                            if (parts[3] && (parts[3].toLowerCase() === 'br' || parts[3].toLowerCase() === 'brief')) {
+                                parts[3] = 'brief';
+                            }
+                        } else if (sub2 === 'ospf') {
+                            if (parts[3]) {
+                                const sub3 = parts[3].toLowerCase();
+                                if (sub3 === 'ne' || sub3 === 'nei' || sub3 === 'neig' || sub3 === 'neigh' || sub3 === 'neighbor') {
+                                    parts[3] = 'neighbor';
+                                } else if (sub3 === 'in' || sub3 === 'int' || sub3 === 'interface') {
+                                    parts[3] = 'interface';
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } else if (cmd === 'ip') {
+            if (parts[1]) {
+                const sub = parts[1].toLowerCase();
+                if (sub === 'add' || sub === 'addr' || sub === 'address') {
+                    parts[1] = 'address';
+                } else if (sub === 'ro' || sub === 'rou' || sub === 'rout' || sub === 'route') {
+                    parts[1] = 'route';
+                } else if (sub === 'routing') {
+                    parts[1] = 'routing';
+                }
+            }
+        } else if (cmd === 'router') {
+            if (parts[1]) {
+                const sub = parts[1].toLowerCase();
+                if (sub === 'os' || sub === 'osp' || sub === 'ospf') {
+                    parts[1] = 'ospf';
+                } else if (sub === 'ri' || sub === 'rip') {
+                    parts[1] = 'rip';
+                }
+            }
+        } else if (cmd === 'shutdown' || cmd === 'shut') {
+            parts[0] = 'shutdown';
+        } else if (cmd === 'description' || cmd === 'desc') {
+            parts[0] = 'description';
+        } else if (cmd === 'switchport') {
+            if (parts[1]) {
+                const sub1 = parts[1].toLowerCase();
+                if (sub1 === 'mo' || sub1 === 'mod' || sub1 === 'mode') {
+                    parts[1] = 'mode';
+                    if (parts[2]) {
+                        const sub2 = parts[2].toLowerCase();
+                        if (sub2 === 'ac' || sub2 === 'acc' || sub2 === 'access') {
+                            parts[2] = 'access';
+                        } else if (sub2 === 'tr' || sub2 === 'tru' || sub2 === 'trun' || sub2 === 'trunk') {
+                            parts[2] = 'trunk';
+                        }
+                    }
+                } else if (sub1 === 'ac' || sub1 === 'acc' || sub1 === 'access') {
+                    parts[1] = 'access';
+                    if (parts[2]) {
+                        const sub2 = parts[2].toLowerCase();
+                        if (sub2 === 'vl' || sub2 === 'vla' || sub2 === 'vlan') {
+                            parts[2] = 'vlan';
+                        }
+                    }
+                } else if (sub1 === 'tr' || sub1 === 'tru' || sub1 === 'trun' || sub1 === 'trunk') {
+                    parts[1] = 'trunk';
+                    if (parts[2]) {
+                        const sub2 = parts[2].toLowerCase();
+                        if (sub2 === 'al' || sub2 === 'all' || sub2 === 'allow' || sub2 === 'allowed') {
+                            parts[2] = 'allowed';
+                            if (parts[3] && (parts[3].toLowerCase() === 'vl' || parts[3].toLowerCase() === 'vla' || parts[3].toLowerCase() === 'vlan')) {
+                                parts[3] = 'vlan';
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        return parts.join(' ');
+    }
+
     private normalizeInterfaceName(name: string): string {
         const lower = name.toLowerCase();
         if (lower.startsWith('gigabitethernet')) {
@@ -1387,5 +1575,143 @@ Success rate is 100 percent (5/5), round-trip min/avg/max = 1/1/4 ms
         const maskParts = mask.split('.').map(Number);
         const netParts = ipParts.map((p, i) => p & maskParts[i]);
         return netParts.join('.');
+    }
+
+    private wildcardToSubnet(wildcard: string): string {
+        return wildcard.split('.').map(p => (255 - parseInt(p, 10)).toString()).join('.');
+    }
+
+    private getContextHelp(line: string): string {
+        const trimmed = line.trim();
+        const endsWithSpaceHelp = line.endsWith(' ?') || line.endsWith('  ?');
+        const searchPrefix = trimmed.substring(0, trimmed.length - 1).trim();
+
+        // Normalize the search prefix to know what mode/command we are matching
+        const normalizedPrefix = this.normalizeCommandString(searchPrefix);
+        const parts = normalizedPrefix.split(/\s+/).filter(Boolean);
+
+        // 1. Help for empty prompt (just '?')
+        if (parts.length === 0) {
+            return this.getModeCommandsHelp();
+        }
+
+        // 2. Help for a word prefix (e.g. "sh?" or "sw?")
+        if (!endsWithSpaceHelp) {
+            const lastWord = parts[parts.length - 1].toLowerCase();
+            const precedingPrefix = parts.slice(0, -1).join(' ');
+            return this.getWordCompletionHelp(precedingPrefix, lastWord);
+        }
+
+        // 3. Help for sub-commands (e.g. "show ?", "ip ?")
+        const cmd = parts[0].toLowerCase();
+        if (cmd === 'show') {
+            if (parts.length === 1) {
+                return `  running-config  Current operating configuration
+  ip              IP information
+  vlan            VLAN status
+  version         System hardware and software status
+  cdp             Discovery Protocol neighbors`;
+            }
+            if (parts[1]?.toLowerCase() === 'ip') {
+                if (parts.length === 2) {
+                    return `  interface   IP interface status and configuration
+  route       IP routing table
+  protocols   Active IP routing protocols`;
+                }
+                if (parts[2]?.toLowerCase() === 'interface') {
+                    return `  brief       Brief summary of IP status and configuration`;
+                }
+            }
+        } else if (cmd === 'ip') {
+            if (parts.length === 1) {
+                return `  address     Configure interface IP address
+  route       Configure static IP route
+  routing     Enable IP routing`;
+            }
+        } else if (cmd === 'interface') {
+            if (parts.length === 1) {
+                return `  GigabitEthernet  GigabitEthernet IEEE 802.3z
+  FastEthernet     FastEthernet IEEE 802.3
+  Loopback         Loopback interface
+  Vlan             Vlan interface`;
+            }
+        } else if (cmd === 'switchport') {
+            if (parts.length === 1) {
+                return `  mode    Set trunking mode of the interface
+  access  Set access mode characteristics`;
+            }
+            if (parts[1]?.toLowerCase() === 'mode') {
+                return `  access  Set port to Access mode
+  trunk   Set port to Trunking mode`;
+            }
+            if (parts[1]?.toLowerCase() === 'access') {
+                return `  vlan    Set access VLAN`;
+            }
+        } else if (cmd === 'no') {
+            if (parts.length === 1) {
+                return `  shutdown     Enable the interface
+  ip           Remove IP configuration
+  description  Remove interface description`;
+            }
+        }
+
+        return `% No help available for command: "${normalizedPrefix} ?"`;
+    }
+
+    private getModeCommandsHelp(): string {
+        switch (this.mode) {
+            case 'USER_EXEC':
+                return `  enable     Turn on privileged commands
+  show       Show running system information
+  ping       Send echo messages`;
+            case 'PRIVILEGED_EXEC':
+                return `  configure  Enter configuration mode
+  show       Show running system information
+  write      Write running configuration to memory
+  copy       Copy configuration files
+  ping       Send echo messages
+  disable    Turn off privileged commands`;
+            case 'GLOBAL_CONFIG':
+                return `  hostname   Set system network name
+  interface  Configure an interface
+  ip         Global IP configuration commands
+  router     Enable routing protocol
+  vlan       Configure VLAN parameters
+  end        Exit configuration mode
+  exit       Exit configuration mode`;
+            case 'INTERFACE_CONFIG':
+                return `  ip           Interface IP configuration commands
+  shutdown     Shutdown the selected interface
+  description  Set interface description
+  switchport   Set interface switchport parameters
+  exit         Exit interface configuration mode`;
+            default:
+                return `  exit       Exit current configuration mode
+  end        Exit to privileged exec mode`;
+        }
+    }
+
+    private getWordCompletionHelp(precedingPrefix: string, lastWord: string): string {
+        const allCommands = this.getModeCommandsList();
+        const matches = allCommands.filter(c => c.startsWith(lastWord));
+        if (matches.length > 0) {
+            return matches.map(m => `  ${m}`).join('\n');
+        }
+        return `% No command matches prefix: "${lastWord}"`;
+    }
+
+    private getModeCommandsList(): string[] {
+        switch (this.mode) {
+            case 'USER_EXEC':
+                return ['enable', 'show', 'ping', 'exit'];
+            case 'PRIVILEGED_EXEC':
+                return ['configure', 'show', 'write', 'copy', 'ping', 'disable', 'exit'];
+            case 'GLOBAL_CONFIG':
+                return ['hostname', 'interface', 'ip', 'router', 'vlan', 'end', 'exit'];
+            case 'INTERFACE_CONFIG':
+                return ['ip', 'shutdown', 'description', 'switchport', 'exit', 'end'];
+            default:
+                return ['exit', 'end'];
+        }
     }
 }

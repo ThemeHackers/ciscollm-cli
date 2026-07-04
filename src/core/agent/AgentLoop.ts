@@ -145,22 +145,7 @@ export class CiscoAgentLoop {
             };
 
         
-            let shellEnabled = false;
-            for (const session of this.coordinator.getSessions().values()) {
-                if (session.isShellEnabled()) {
-                    shellEnabled = true;
-                    break;
-                }
-            }
-
-         
-            const activeTools = CiscoAgentTools.filter(tool => {
-                const shellTools = ['define_shell_variable', 'execute_shell_loop', 'define_shell_function'];
-                if (shellTools.includes(tool.function.name)) {
-                    return shellEnabled;
-                }
-                return true;
-            });
+            const activeTools = CiscoAgentTools;
 
             logger.modelStatus(this.llmClient.getModelName());
             const modelSpinner = createSpinner(`[Step ${executionDepth}/${MAX_STEPS}] Agent is thinking...`).start();
@@ -274,14 +259,6 @@ export class CiscoAgentLoop {
                         await this.handleExecuteCommandCall(call);
                     } else if (call.function.name === 'ping_test') {
                         await this.handlePingTestCall(call);
-                    } else if (call.function.name === 'enable_ios_shell') {
-                        await this.handleEnableIosShellCall(call);
-                    } else if (call.function.name === 'define_shell_variable') {
-                        await this.handleDefineShellVariableCall(call);
-                    } else if (call.function.name === 'execute_shell_loop') {
-                        await this.handleExecuteShellLoopCall(call);
-                    } else if (call.function.name === 'define_shell_function') {
-                        await this.handleDefineShellFunctionCall(call);
                     }
                 }
             } else {
@@ -888,140 +865,7 @@ export class CiscoAgentLoop {
         };
     }
 
-    private async handleEnableIosShellCall(call: ToolCall): Promise<void> {
-        let args;
-        try {
-            args = safeJsonParse(call.function.arguments);
-        } catch (e) {
-            this.injectToolResponse(call.id, 'enable_ios_shell', `Format Error: Invalid Tool Call arguments. Must be JSON.`);
-            return;
-        }
 
-        const mode = args.mode;
-        const requestedDevice = args.device;
-
-        let targetDeviceId: string;
-        try {
-            targetDeviceId = this.resolveTargetDevice(requestedDevice);
-        } catch (err: any) {
-            this.injectToolResponse(call.id, 'enable_ios_shell', `Error: ${err.message}`);
-            return;
-        }
-
-        const cmdSpinner = createSpinner(`[${targetDeviceId}] Enabling Cisco IOS Shell (${mode})...`).start();
-        try {
-            const session = this.coordinator.getSession(targetDeviceId)!;
-            let output = '';
-            if (mode === 'global') {
-                await session.execute('configure terminal');
-                output += await session.execute('shell processing full');
-                await session.execute('end');
-            } else {
-                output += await session.execute('terminal shell');
-            }
-            cmdSpinner.succeed(`[${targetDeviceId}] Cisco IOS Shell enabled (${mode}).`);
-            this.injectToolResponse(call.id, 'enable_ios_shell', output || 'Shell enabled successfully.');
-        } catch (error: any) {
-            cmdSpinner.fail(`[${targetDeviceId}] Failed to enable Cisco IOS Shell: ${error.message}`);
-            this.injectToolResponse(call.id, 'enable_ios_shell', `Error: ${error.message}`);
-        }
-    }
-
-    private async handleDefineShellVariableCall(call: ToolCall): Promise<void> {
-        let args;
-        try {
-            args = safeJsonParse(call.function.arguments);
-        } catch (e) {
-            this.injectToolResponse(call.id, 'define_shell_variable', `Format Error: Invalid Tool Call arguments. Must be JSON.`);
-            return;
-        }
-
-        const { name, value, device } = args;
-
-        let targetDeviceId: string;
-        try {
-            targetDeviceId = this.resolveTargetDevice(device);
-        } catch (err: any) {
-            this.injectToolResponse(call.id, 'define_shell_variable', `Error: ${err.message}`);
-            return;
-        }
-
-        const cmdSpinner = createSpinner(`[${targetDeviceId}] Defining shell variable: ${name}=${value}...`).start();
-        try {
-            const session = this.coordinator.getSession(targetDeviceId)!;
-            const output = await session.execute(`${name}=${value}`);
-            cmdSpinner.succeed(`[${targetDeviceId}] Defined shell variable: ${name}=${value}`);
-            this.injectToolResponse(call.id, 'define_shell_variable', output || `Variable ${name} defined.`);
-        } catch (error: any) {
-            cmdSpinner.fail(`[${targetDeviceId}] Failed to define shell variable: ${error.message}`);
-            this.injectToolResponse(call.id, 'define_shell_variable', `Error: ${error.message}`);
-        }
-    }
-
-    private async handleExecuteShellLoopCall(call: ToolCall): Promise<void> {
-        let args;
-        try {
-            args = safeJsonParse(call.function.arguments);
-        } catch (e) {
-            this.injectToolResponse(call.id, 'execute_shell_loop', `Format Error: Invalid Tool Call arguments. Must be JSON.`);
-            return;
-        }
-
-        const { variable, items, command, device } = args;
-        const itemsStr = Array.isArray(items) ? items.join(' ') : items;
-        const loopCommand = `for ${variable} in ${itemsStr}; do ${command}; done`;
-
-        let targetDeviceId: string;
-        try {
-            targetDeviceId = this.resolveTargetDevice(device);
-        } catch (err: any) {
-            this.injectToolResponse(call.id, 'execute_shell_loop', `Error: ${err.message}`);
-            return;
-        }
-
-        const cmdSpinner = createSpinner(`[${targetDeviceId}] Executing shell loop: "${loopCommand}"...`).start();
-        try {
-            const session = this.coordinator.getSession(targetDeviceId)!;
-            const output = await session.execute(loopCommand);
-            cmdSpinner.succeed(`[${targetDeviceId}] Shell loop completed: "${loopCommand}"`);
-            this.injectToolResponse(call.id, 'execute_shell_loop', output);
-        } catch (error: any) {
-            cmdSpinner.fail(`[${targetDeviceId}] Shell loop failed: ${error.message}`);
-            this.injectToolResponse(call.id, 'execute_shell_loop', `Error: ${error.message}`);
-        }
-    }
-
-    private async handleDefineShellFunctionCall(call: ToolCall): Promise<void> {
-        let args;
-        try {
-            args = safeJsonParse(call.function.arguments);
-        } catch (e) {
-            this.injectToolResponse(call.id, 'define_shell_function', `Format Error: Invalid Tool Call arguments. Must be JSON.`);
-            return;
-        }
-
-        const { name, body, device } = args;
-        const funcCommand = `${name}() { ${body}; }`;
-
-        let targetDeviceId: string;
-        try {
-            targetDeviceId = this.resolveTargetDevice(device);
-        } catch (err: any) {
-            this.injectToolResponse(call.id, 'define_shell_function', `Error: ${err.message}`);
-            return;
-        }
-
-        const cmdSpinner = createSpinner(`[${targetDeviceId}] Defining shell function: ${name}()...`).start();
-        try {
-            const session = this.coordinator.getSession(targetDeviceId)!;
-            const output = await session.execute(funcCommand);
-            cmdSpinner.succeed(`[${targetDeviceId}] Defined shell function: ${name}()`);
-            this.injectToolResponse(call.id, 'define_shell_function', output || `Function ${name} defined.`);
-        } catch (error: any) {
-            cmdSpinner.fail(`[${targetDeviceId}] Failed to define shell function: ${error.message}`);
-            this.injectToolResponse(call.id, 'define_shell_function', `Error: ${error.message}`);
-        }
-    }
 
     private async handlePingTestCall(call: ToolCall): Promise<void> {
         let args;
