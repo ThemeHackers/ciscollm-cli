@@ -1,6 +1,7 @@
 import inquirer from 'inquirer';
 import chalk from 'chalk';
-import { readFileSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync } from 'fs';
+import { join } from 'path';
 import { MultiAgentCoordinator } from '../../core/agent/MultiAgentCoordinator';
 import { PlinkSerialSession } from '../../infrastructure/protocols/PlinkSerial';
 import { SshSession } from '../../infrastructure/protocols/SshSession';
@@ -8,12 +9,11 @@ import { TelnetSession } from '../../infrastructure/protocols/TelnetSession';
 import { LLMClient, LLMProvider } from '../../infrastructure/llm/LLMClient';
 import { CiscoAgentLoop } from '../../core/agent/AgentLoop';
 import { logger, createSpinner } from '../ui/ui';
-import { startDashboardServer } from '../../server/dashboard';
-
+import { runInteractiveWizard } from '../ui/interactiveWizard';
+import { NetworkPlanner } from '../../core/agent/NetworkPlanner';
 export async function runAction(
     options: any,
     coordinatorWrapper: { active: MultiAgentCoordinator | null },
-    dashboardWrapper: { server: any },
     cleanup: () => Promise<void>
 ) {
     let provider = options.provider as LLMProvider;
@@ -47,7 +47,6 @@ export async function runAction(
     let refTelemetry = options.refTelemetry !== false;
     let nonInteractive = options.nonInteractive === true;
     let rbacRole = options.rbacRole || 'admin';
-    let dashboardPort = options.dashboardPort ? parseInt(options.dashboardPort, 10) : 3000;
 
     if (nonInteractive) {
         process.env.CISCOLLM_NON_INTERACTIVE = 'true';
@@ -83,481 +82,80 @@ export async function runAction(
 
     if (!localType) localType = 'ollama';
 
-    if (!goal) {
-        const detectedComs = await PlinkSerialSession.listAvailableComPorts();
 
-        type StepName = 
-            | 'PROVIDER'
-            | 'LOCAL_TYPE'
-            | 'API_KEY'
-            | 'MODEL'
-            | 'ENDPOINT'
-            | 'PROTOCOL'
-            | 'SERIAL_COM'
-            | 'SERIAL_BAUD'
-            | 'IP_HOST'
-            | 'IP_PORT'
-            | 'IP_USER'
-            | 'IP_PASS'
-            | 'GOAL'
-            | 'CONFIRMATION';
+    let sessionName = options.sessions;
+    const sessionsFilePath = join(process.cwd(), 'sessions.json');
+    let savedSessions: any = {};
+    if (existsSync(sessionsFilePath)) {
+        try {
+            savedSessions = JSON.parse(readFileSync(sessionsFilePath, 'utf8'));
+        } catch(e) {}
+    }
 
-        let currentStep: StepName = 'PROVIDER';
-        const history: StepName[] = [];
+    if (sessionName && savedSessions[sessionName]) {
+        const s = savedSessions[sessionName];
+        provider = provider || s.provider;
+        localType = localType || s.localType;
+        apiKey = apiKey || s.apiKey;
+        model = model || s.model;
+        endpoint = endpoint || s.endpoint;
+        protocol = protocol || s.protocol;
+        com = com || s.com;
+        baud = baud || s.baud;
+        host = host || s.host;
+        port = port || s.port;
+        username = username || s.username;
+        password = password || s.password;
+        logger.info(`Loaded session '${sessionName}' from ${sessionsFilePath}`);
+    }
 
-        const answers: any = {
-            provider: provider || 'local',
-            localType: localType || 'ollama',
-            apiKey: apiKey || '',
-            model: model || '',
-            endpoint: endpoint || '',
-            protocol: protocol || 'serial',
-            com: com || '',
-            baud: baud || '9600',
-            host: host || '',
-            port: port || '',
-            username: username || '',
-            password: password || '',
-            goal: ''
+    options.provider = provider;
+    options.localType = localType;
+    options.apiKey = apiKey;
+    options.model = model;
+    options.endpoint = endpoint;
+    options.protocol = protocol;
+    options.com = com;
+    options.baud = baud;
+    options.host = host;
+    options.port = port;
+    options.username = username;
+    options.password = password;
+
+    if (!com && !host) {
+        const answers = await runInteractiveWizard(options, false);
+        provider = answers.provider;
+        localType = answers.localType;
+        apiKey = answers.apiKey;
+        model = answers.model;
+        endpoint = answers.endpoint;
+        protocol = answers.protocol;
+        com = answers.com;
+        baud = answers.baud;
+        host = answers.host;
+        port = answers.port;
+        username = answers.username;
+        password = answers.password;
+        if (answers.goal) goal = answers.goal;
+    }
+
+    if (sessionName) {
+        savedSessions[sessionName] = {
+            provider, localType, apiKey, model, endpoint, protocol, com, baud, host, port, username, password
         };
-
-        const goForward = (nextStep: StepName) => {
-            history.push(currentStep);
-            currentStep = nextStep;
-        };
-
-        const goBack = () => {
-            if (history.length > 0) {
-                currentStep = history.pop()!;
-            } else {
-                logger.warn('Already at the first step.');
-            }
-        };
-
-        const refreshConsole = () => {
-            console.clear();
-            logger.banner();
-            if (detectedComs.length > 0) {
-                logger.info('Detected active COM ports on system:');
-                for (const port of detectedComs) {
-                    console.log(`   ${chalk.yellow('•')} ${chalk.yellow(port)}`);
-                }
-            }
-            console.log('');
-        };
-
-        while ((currentStep as string) !== 'CONFIRMATION') {
-            refreshConsole();
-            switch (currentStep as StepName) {
-                case 'PROVIDER': {
-                    const ans = await inquirer.prompt([
-                        {
-                            type: 'list',
-                            name: 'provider',
-                            message: 'Select LLM Provider:',
-                            choices: [
-                                { name: 'Local (Ollama / LM Studio)', value: 'local' },
-                                { name: 'Cloud (OpenRouter)', value: 'cloud' }
-                            ],
-                            default: answers.provider
-                        }
-                    ]);
-                    answers.provider = ans.provider;
-                    if (answers.provider === 'local') {
-                        goForward('LOCAL_TYPE');
-                    } else {
-                        goForward('API_KEY');
-                    }
-                    break;
-                }
-
-                case 'LOCAL_TYPE': {
-                    const ans = await inquirer.prompt([
-                        {
-                            type: 'list',
-                            name: 'localType',
-                            message: 'Select Local LLM Service:',
-                            choices: [
-                                { name: 'Ollama', value: 'ollama' },
-                                { name: 'LM Studio', value: 'lmstudio' },
-                                { name: chalk.dim('< Go Back'), value: '__back__' }
-                            ],
-                            default: answers.localType
-                        }
-                    ]);
-                    if (ans.localType === '__back__') {
-                        goBack();
-                    } else {
-                        answers.localType = ans.localType;
-                        goForward('MODEL');
-                    }
-                    break;
-                }
-
-                case 'API_KEY': {
-                    const ans = await inquirer.prompt([
-                        {
-                            type: 'input',
-                            name: 'apiKey',
-                            message: 'Enter OpenRouter API Key (or type "back" to go back):',
-                            default: answers.apiKey || undefined
-                        }
-                    ]);
-                    if (ans.apiKey.trim().toLowerCase() === 'back') {
-                        goBack();
-                    } else {
-                        answers.apiKey = ans.apiKey;
-                        goForward('MODEL');
-                    }
-                    break;
-                }
-
-                case 'MODEL': {
-                    const defaultModel = answers.model || (answers.provider === 'cloud' 
-                        ? 'nvidia/nemotron-3-super-120b-a12b:free' 
-                        : 'qwen3.5:4b');
-
-                    const ans = await inquirer.prompt([
-                        {
-                            type: 'input',
-                            name: 'model',
-                            message: 'Enter LLM Model Name (or type "back" to go back):',
-                            default: defaultModel
-                        }
-                    ]);
-                    if (ans.model.trim().toLowerCase() === 'back') {
-                        goBack();
-                    } else {
-                        answers.model = ans.model;
-                        goForward('ENDPOINT');
-                    }
-                    break;
-                }
-
-                case 'ENDPOINT': {
-                    const defaultEndpoint = answers.endpoint || (answers.provider === 'cloud'
-                        ? 'https://openrouter.ai/api/v1'
-                        : (answers.localType === 'lmstudio'
-                            ? 'http://127.0.0.1:1234/v1'
-                            : 'http://127.0.0.1:11434/v1'));
-
-                    const ans = await inquirer.prompt([
-                        {
-                            type: 'input',
-                            name: 'endpoint',
-                            message: 'Enter LLM API Endpoint URL (or type "back" to go back):',
-                            default: defaultEndpoint
-                        }
-                    ]);
-                    if (ans.endpoint.trim().toLowerCase() === 'back') {
-                        goBack();
-                    } else {
-                        answers.endpoint = ans.endpoint;
-                        goForward('PROTOCOL');
-                    }
-                    break;
-                }
-
-                case 'PROTOCOL': {
-                    const ans = await inquirer.prompt([
-                        {
-                            type: 'list',
-                            name: 'protocol',
-                            message: 'Select Connection Protocol:',
-                            choices: [
-                                { name: 'serial', value: 'serial' },
-                                { name: 'ssh', value: 'ssh' },
-                                { name: 'telnet', value: 'telnet' },
-                                { name: chalk.dim('< Go Back'), value: '__back__' }
-                            ],
-                            default: answers.protocol
-                        }
-                    ]);
-                    if (ans.protocol === '__back__') {
-                        goBack();
-                    } else {
-                        answers.protocol = ans.protocol;
-                        if (answers.protocol === 'serial') {
-                            goForward('SERIAL_COM');
-                        } else {
-                            goForward('IP_HOST');
-                        }
-                    }
-                    break;
-                }
-
-                case 'SERIAL_COM': {
-                    if (detectedComs.length > 0) {
-                        const choices = detectedComs.map(port => {
-                            const match = /^(COM\d+)\b/i.exec(port);
-                            const portValue = match ? match[1].toUpperCase() : port;
-                            return { name: port, value: portValue };
-                        });
-                        choices.push({ name: 'Enter COM port(s) manually', value: '__manual__' });
-                        choices.push({ name: chalk.dim('< Go Back'), value: '__back__' });
-
-                        const ans = await inquirer.prompt([
-                            {
-                                type: 'checkbox',
-                                name: 'coms',
-                                message: 'Select COM Port(s) (Use Space to select, Enter to confirm):',
-                                choices: choices,
-                                validate: (input) => {
-                                    if (input.length === 0) {
-                                        return 'You must select at least one option.';
-                                    }
-                                    if (input.includes('__back__') && input.length > 1) {
-                                        return 'Cannot select "< Go Back" along with other ports.';
-                                    }
-                                    if (input.includes('__manual__') && input.length > 1) {
-                                        return 'Cannot select "Enter COM port(s) manually" along with other ports.';
-                                    }
-                                    return true;
-                                }
-                            }
-                        ]);
-
-                        if (ans.coms.includes('__back__')) {
-                            goBack();
-                        } else if (ans.coms.includes('__manual__')) {
-                            const manualAns = await inquirer.prompt([
-                                {
-                                    type: 'input',
-                                    name: 'com',
-                                    message: 'Enter COM Port name(s) (comma-separated, e.g. COM3 or COM3,COM4):',
-                                    validate: (input) => input.trim().length > 0 ? true : 'COM port is required.'
-                                }
-                            ]);
-                            answers.com = manualAns.com;
-                            goForward('SERIAL_BAUD');
-                        } else {
-                            answers.com = ans.coms.join(',');
-                            goForward('SERIAL_BAUD');
-                        }
-                    } else {
-                        const ans = await inquirer.prompt([
-                            {
-                                type: 'input',
-                                name: 'com',
-                                message: 'Enter COM Port name(s) (comma-separated, e.g. COM3 or COM3,COM4) (or type "back" to go back):',
-                                default: answers.com || undefined,
-                                validate: (input) => {
-                                    if (input.trim().toLowerCase() === 'back') return true;
-                                    return input.trim().length > 0 ? true : 'COM port is required.';
-                                }
-                            }
-                        ]);
-                        if (ans.com.trim().toLowerCase() === 'back') {
-                            goBack();
-                        } else {
-                            answers.com = ans.com;
-                            goForward('SERIAL_BAUD');
-                        }
-                    }
-                    break;
-                }
-
-                case 'SERIAL_BAUD': {
-                    const ans = await inquirer.prompt([
-                        {
-                            type: 'list',
-                            name: 'baud',
-                            message: 'Select Serial Baud Rate:',
-                            choices: [
-                                '9600', '19200', '38400', '57600', '115200',
-                                { name: chalk.dim('< Go Back'), value: '__back__' }
-                            ],
-                            default: answers.baud
-                        }
-                    ]);
-                    if (ans.baud === '__back__') {
-                        goBack();
-                    } else {
-                        answers.baud = ans.baud;
-                        goForward('GOAL');
-                    }
-                    break;
-                }
-
-                case 'IP_HOST': {
-                    const ans = await inquirer.prompt([
-                        {
-                            type: 'input',
-                            name: 'host',
-                            message: 'Enter Target IP address(es) / Hostname(s) (comma-separated) (or type "back" to go back):',
-                            default: answers.host || undefined,
-                            validate: (input) => {
-                                if (input.trim().toLowerCase() === 'back') return true;
-                                return input.trim().length > 0 ? true : 'Host address is required.';
-                            }
-                        }
-                    ]);
-                    if (ans.host.trim().toLowerCase() === 'back') {
-                        goBack();
-                    } else {
-                        answers.host = ans.host;
-                        goForward('IP_PORT');
-                    }
-                    break;
-                }
-
-                case 'IP_PORT': {
-                    const ans = await inquirer.prompt([
-                        {
-                            type: 'input',
-                            name: 'port',
-                            message: 'Enter Connection Port (leave empty for default) (or type "back" to go back):',
-                            default: answers.port || undefined
-                        }
-                    ]);
-                    if (ans.port.trim().toLowerCase() === 'back') {
-                        goBack();
-                    } else {
-                        answers.port = ans.port;
-                        goForward('IP_USER');
-                    }
-                    break;
-                }
-
-                case 'IP_USER': {
-                    const ans = await inquirer.prompt([
-                        {
-                            type: 'input',
-                            name: 'username',
-                            message: 'Enter Device Username (leave empty if none) (or type "back" to go back):',
-                            default: answers.username || undefined
-                        }
-                    ]);
-                    if (ans.username.trim().toLowerCase() === 'back') {
-                        goBack();
-                    } else {
-                        answers.username = ans.username;
-                        goForward('IP_PASS');
-                    }
-                    break;
-                }
-
-                case 'IP_PASS': {
-                    const ans = await inquirer.prompt([
-                        {
-                            type: 'password',
-                            name: 'password',
-                            message: 'Enter Device Password (or type "back" to go back):',
-                            default: answers.password || undefined
-                        }
-                    ]);
-                    if (ans.password === 'back') {
-                        goBack();
-                    } else {
-                        answers.password = ans.password;
-                        goForward('GOAL');
-                    }
-                    break;
-                }
-
-                case 'GOAL': {
-                    const ans = await inquirer.prompt([
-                        {
-                            type: 'input',
-                            name: 'goal',
-                            message: 'Enter Execution Goal / Intent (or type "back" to go back):',
-                            default: answers.goal || undefined,
-                            validate: (input) => {
-                                if (input.trim().toLowerCase() === 'back') return true;
-                                return input.trim().length > 0 ? true : 'Execution goal is required.';
-                            }
-                        }
-                    ]);
-                    if (ans.goal.trim().toLowerCase() === 'back') {
-                        goBack();
-                    } else {
-                        answers.goal = ans.goal;
-                        goForward('CONFIRMATION');
-                    }
-                    break;
-                }
-
-                case 'CONFIRMATION':
-                    break;
-            }
-        }
-
-        // Show configuration confirmation wizard summary
-        refreshConsole();
-        console.log(chalk.bold.yellow('=== CISCOLLM CONFIGURATION CONFIRMATION ==='));
-        console.log(`• Provider:         ${chalk.green(answers.provider.toUpperCase())}`);
-        if (answers.provider === 'local') {
-            console.log(`• Local Type:       ${chalk.green(answers.localType.toUpperCase())}`);
-        }
-        console.log(`• Model:            ${chalk.green(answers.model || 'qwen3.5:4b')}`);
-        console.log(`• Endpoint URL:     ${chalk.green(answers.endpoint)}`);
-        console.log(`• Protocol:         ${chalk.green(answers.protocol.toUpperCase())}`);
-        if (answers.protocol === 'serial') {
-            console.log(`• COM Port(s):      ${chalk.green(answers.com)}`);
-            console.log(`• Baud Rate:        ${chalk.green(answers.baud)}`);
-        } else {
-            console.log(`• Host IP(s):       ${chalk.green(answers.host)}`);
-            console.log(`• Connection Port:  ${chalk.green(answers.port || '(default)')}`);
-            console.log(`• Login Username:   ${chalk.green(answers.username || '(none)')}`);
-        }
-        console.log(`• Execution Goal:   ${chalk.cyan(answers.goal)}`);
-        console.log(chalk.bold.yellow('==========================================='));
-
-        const confirmAns = await inquirer.prompt([
-            {
-                type: 'list',
-                name: 'confirm',
-                message: 'Do you want to proceed with this configuration?',
-                choices: [
-                    { name: 'Yes, start execution', value: 'yes' },
-                    { name: 'Edit Execution Goal', value: 'edit_goal' },
-                    { name: 'Restart Wizard', value: 'restart' },
-                    { name: 'Cancel and Exit', value: 'cancel' }
-                ]
-            }
-        ]);
-
-        if (confirmAns.confirm === 'yes') {
-            provider = answers.provider;
-            localType = answers.localType;
-            apiKey = answers.apiKey;
-            model = answers.model;
-            endpoint = answers.endpoint;
-            protocol = answers.protocol;
-            com = answers.com;
-            baud = answers.baud;
-            host = answers.host;
-            port = answers.port;
-            username = answers.username;
-            password = answers.password;
-            goal = answers.goal;
-        } else if (confirmAns.confirm === 'edit_goal') {
-            answers.goal = '';
-            currentStep = 'GOAL';
-            // Loop back to prompt goal
-            // Wait, we need to restart the wizard loop! Let's re-run this function or let the while loop run.
-            // Because currentStep is set to 'GOAL' and answers are preserved, calling runAction again is easiest.
-            options.goal = undefined;
-            return runAction(options, coordinatorWrapper, dashboardWrapper, cleanup);
-        } else if (confirmAns.confirm === 'restart') {
-            options.goal = undefined;
-            return runAction({ ...options, provider: undefined, localType: undefined, model: undefined, endpoint: undefined, protocol: undefined, com: undefined, host: undefined, username: undefined, password: undefined }, coordinatorWrapper, dashboardWrapper, cleanup);
-        } else {
-            logger.info('Configuration wizard cancelled.');
-            process.exit(0);
+        try {
+            writeFileSync(sessionsFilePath, JSON.stringify(savedSessions, null, 2), 'utf8');
+            logger.info(`Session setup saved to '${sessionName}' in ${sessionsFilePath}`);
+        } catch (err: any) {
+            logger.warn(`Failed to save session: ${err.message}`);
         }
     }
 
     logger.info(`Initializing system link in [${provider.toUpperCase()}] mode using ${protocol.toUpperCase()}...`);
     logger.info(`Command reference policy: strict=${strictCommandRef ? 'on' : 'off'}, telemetry=${refTelemetry ? 'on' : 'off'}`);
     
+    
     coordinatorWrapper.active = new MultiAgentCoordinator();
-    try {
-        dashboardWrapper.server = startDashboardServer(coordinatorWrapper.active, dashboardPort);
-    } catch (e: any) {
-        logger.warn(`Failed to auto-start live Visual Control Dashboard: ${e.message}`);
-    }
-
     try {
         if (protocol === 'serial') {
             if (!com) {
@@ -648,7 +246,71 @@ export async function runAction(
             referenceTelemetry: refTelemetry,
             rbacRole: rbacRole
         });
-        await agent.run(goal);
+        
+        const { wantToContinue } = await inquirer.prompt([
+            {
+                type: 'confirm',
+                name: 'wantToContinue',
+                message: chalk.cyan('Setup completed successfully. Do you want to continue chatting / start execution?'),
+                default: true
+            }
+        ]);
+
+        if (wantToContinue) {
+            if (!goal) {
+                const { chatGoal } = await inquirer.prompt([
+                    {
+                        type: 'input',
+                        name: 'chatGoal',
+                        message: 'Enter your goal or instruction:',
+                        validate: (input: string) => input.trim().length > 0 ? true : 'Goal cannot be empty.'
+                    }
+                ]);
+                goal = chatGoal;
+            }
+
+            const planner = new NetworkPlanner(localAIClient, coordinatorWrapper.active);
+            let planApproved = false;
+            let currentGoal = goal;
+            
+            while (!planApproved) {
+                const plan = await planner.generatePlan(currentGoal);
+                
+                const { planAction } = await inquirer.prompt([
+                    {
+                        type: 'list',
+                        name: 'planAction',
+                        message: chalk.cyan('Review the Orchestration Plan above. What would you like to do?'),
+                        choices: [
+                            { name: 'Approve and Execute', value: 'approve' },
+                            { name: 'Provide Feedback / Revise Plan', value: 'revise' },
+                            { name: 'Cancel Execution', value: 'cancel' }
+                        ]
+                    }
+                ]);
+
+                if (planAction === 'approve') {
+                    planApproved = true;
+                    currentGoal = `Approved Execution Blueprint:\n${plan}\n\nUser Goal: ${currentGoal}`;
+                } else if (planAction === 'revise') {
+                    const { feedback } = await inquirer.prompt([
+                        {
+                            type: 'input',
+                            name: 'feedback',
+                            message: 'Enter your feedback to revise the plan:'
+                        }
+                    ]);
+                    currentGoal = `${currentGoal}\nFeedback for revision: ${feedback}`;
+                } else {
+                    logger.info('Execution cancelled by user.');
+                    return;
+                }
+            }
+
+            await agent.run(currentGoal);
+        } else {
+            logger.info('Exiting normally as requested.');
+        }
 
     } catch (err: any) {
         logger.critical(`Execution Error: ${err.message}`);

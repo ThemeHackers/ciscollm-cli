@@ -9,6 +9,7 @@ export class SshSession extends BaseSession {
     private channel: ClientChannel | null = null;
     private buffer: string = '';
     private eventEmitter = new EventEmitter();
+    private isConnecting: boolean = true;
 
     constructor(
         private config: {
@@ -27,7 +28,6 @@ export class SshSession extends BaseSession {
             this.client = new Client();
             
             this.client.on('ready', () => {
-                console.log(chalk.cyan(`❯ SSH connection ready to host ${this.config.host}. Launching interactive shell...`));
                 this.client!.shell((err, stream) => {
                     if (err) {
                         return reject(new Error(`Failed to open SSH shell channel: ${err.message}`));
@@ -37,7 +37,6 @@ export class SshSession extends BaseSession {
                     this.channel.on('data', (data: Buffer) => this.handleData(data));
                     
                     this.channel.on('close', () => {
-                        console.log(chalk.gray(`❯ SSH channel closed.`));
                     });
 
                     const onStreamUpdate = async () => {
@@ -46,7 +45,6 @@ export class SshSession extends BaseSession {
                             this.eventEmitter.removeListener('stream_updated', onStreamUpdate);
                             clearTimeout(connectTimeout);
                             this.updateStateFromPrompt(match[1]);
-                            console.log(chalk.cyan(`❯ Disabling pagination with standard commands...`));
                             const paginationCommands = [
                                 'terminal length 0',
                                 'terminal width 0',
@@ -57,6 +55,7 @@ export class SshSession extends BaseSession {
                             for (const cmd of paginationCommands) {
                                 await this.execute(cmd).catch(() => {});
                             }
+                            this.isConnecting = false;
                             resolve();
                         }
                     };
@@ -117,7 +116,9 @@ export class SshSession extends BaseSession {
 
         for (const line of completedLines) {
             if (/%[A-Za-z0-9_]+-[0-7]-[A-Za-z0-9_]+:/.test(line)) {
-                console.log(chalk.yellow(`[Syslog Notification] ${line}`));
+                if (!this.isConnecting) {
+                    console.log(chalk.yellow(`[Syslog Notification] ${line}`));
+                }
                 this.emitNotification(line);
             } else {
                 remainingLines.push(line);

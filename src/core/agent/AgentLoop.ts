@@ -16,6 +16,10 @@ import { HierarchicalAgentManager } from './HierarchicalAgentManager';
 import { StateDiff } from '../rollback/StateDiff';
 import { NetworkAudit } from '../guardrails/NetworkAudit';
 import { safeJsonParse } from '../../shared/utils';
+import { MemoryManager } from './MemoryManager';
+import { IntentTranslator } from './IntentTranslator';
+import { DigitalTwin } from './DigitalTwin';
+import { PluginManager } from '../plugins/PluginManager';
 
 type AgentLoopOptions = {
     strictReferenceMode?: boolean;
@@ -46,6 +50,8 @@ export class CiscoAgentLoop {
     private validationNudgeCount = 0;
     private lastTopologyDiscoveryAt = 0;
     private readonly topologyRefreshIntervalMs = 15000;
+    private memoryManager = new MemoryManager();
+    private digitalTwin = new DigitalTwin();
 
     constructor(
         private llmClient: LLMClient,
@@ -120,11 +126,12 @@ export class CiscoAgentLoop {
 
         const stateInfo = this.buildStateInfoString();
         const topologyInfo = await this.buildTopologyInfoString();
+        const memoryInfo = this.memoryManager.retrieveRelevantExperience(userGoal);
 
         
         this.messages.push({
             role: 'system',
-            content: PromptEngine.getSystemPrompt(stateInfo, this.commandHints, this.strictReferenceMode, topologyInfo)
+            content: PromptEngine.getSystemPrompt(stateInfo, this.commandHints, this.strictReferenceMode, topologyInfo, memoryInfo)
         });
         
         this.messages.push({ role: 'user', content: userGoal });
@@ -139,13 +146,14 @@ export class CiscoAgentLoop {
             
             const updatedStateInfo = this.buildStateInfoString();
             const updatedTopologyInfo = await this.buildTopologyInfoString();
+            const memoryInfo = this.memoryManager.retrieveRelevantExperience(userGoal);
             this.messages[0] = {
                 role: 'system',
-                content: PromptEngine.getSystemPrompt(updatedStateInfo, this.commandHints, this.strictReferenceMode, updatedTopologyInfo)
+                content: PromptEngine.getSystemPrompt(updatedStateInfo, this.commandHints, this.strictReferenceMode, updatedTopologyInfo, memoryInfo)
             };
 
         
-            const activeTools = CiscoAgentTools;
+            const activeTools = [...CiscoAgentTools, ...PluginManager.getInstance().getDynamicTools()];
 
             logger.modelStatus(this.llmClient.getModelName());
             const modelSpinner = createSpinner(`[Step ${executionDepth}/${MAX_STEPS}] Agent is thinking...`).start();
@@ -214,7 +222,7 @@ export class CiscoAgentLoop {
             try {
                 response = await this.llmClient.generateCompletion(this.getMessagesForLlm(), activeTools, onChunk);
                 
-   isThinking = false;
+                isThinking = false;
                 if (gpuTimer) clearInterval(gpuTimer);
                 
                 if (hasStartedStreaming) {
@@ -249,6 +257,25 @@ export class CiscoAgentLoop {
             } catch (err: any) {
                 isThinking = false;
                 if (gpuTimer) clearInterval(gpuTimer);
+                
+                if (hasStartedStreaming) {
+                    if (wrapper) wrapper.flush();
+                    const totalWidth = getTerminalWidth();
+                    const bottomBorder = chalk.blue('└' + '─'.repeat(Math.max(0, totalWidth - 1)));
+                    console.log('\n' + bottomBorder + '\n');
+                }
+
+                if (err.message && err.message.includes('LLM_HALLUCINATION_LOOP')) {
+                    modelSpinner.warn(`[Step ${executionDepth}/${MAX_STEPS}] Anti-Hallucination triggered: LLM stuck in a reasoning loop.`);
+                    logger.warn('The AI agent got stuck in a repetitive thought loop and was forcefully aborted.');
+                    
+                    if (err.partialMessage) {
+                        this.messages.push(err.partialMessage);
+                    }
+                    dynamicLoopActive = false;
+                    break; // Break out of the execution loop safely
+                }
+
                 modelSpinner.fail(`[Step ${executionDepth}/${MAX_STEPS}] LLM Client failed to respond.`);
                 throw err;
             }
@@ -259,6 +286,8 @@ export class CiscoAgentLoop {
                         await this.handleExecuteCommandCall(call);
                     } else if (call.function.name === 'ping_test') {
                         await this.handlePingTestCall(call);
+                    } else if (PluginManager.getInstance().hasPlugin(call.function.name)) {
+                        await this.handlePluginCall(call);
                     }
                 }
             } else {
@@ -502,6 +531,27 @@ export class CiscoAgentLoop {
         return 'other';
     }
 
+    private async handlePluginCall(call: ToolCall): Promise<void> {
+        let args;
+        try {
+            args = safeJsonParse(call.function.arguments);
+        } catch (e) {
+            this.injectToolResponse(call.id, call.function.name, `Format Error: Invalid Tool Call arguments. Must be JSON.`);
+            return;
+        }
+
+        const pluginSpinner = createSpinner(`Executing plugin: "${call.function.name}"...`).start();
+        try {
+            const output = await PluginManager.getInstance().executePlugin(call.function.name, args);
+            pluginSpinner.stop();
+            logger.toolBox(`plugin_execution: ${call.function.name}`, output, true);
+            this.injectToolResponse(call.id, call.function.name, output);
+        } catch (error: any) {
+            pluginSpinner.fail(`Plugin ${call.function.name} failed: ${error.message}`);
+            this.injectToolResponse(call.id, call.function.name, `Plugin Error: ${error.message}`);
+        }
+    }
+
     private async handleExecuteCommandCall(call: ToolCall): Promise<void> {
         let args;
         try {
@@ -607,13 +657,7 @@ export class CiscoAgentLoop {
         const commandCategory = this.classifyCommand(cleanCommand);
         const lastCmdInfo = this.lastCommandPerDevice[targetDeviceId];
 
-        if (commandCategory === 'inspection') {
-            this.lastCommandPerDevice[targetDeviceId] = {
-                command: cleanCommand,
-                count: 0,
-                category: commandCategory
-            };
-        } else if (lastCmdInfo && lastCmdInfo.command === cleanCommand && lastCmdInfo.category === commandCategory) {
+        if (lastCmdInfo && lastCmdInfo.command === cleanCommand && lastCmdInfo.category === commandCategory) {
             lastCmdInfo.count++;
         } else {
             this.lastCommandPerDevice[targetDeviceId] = {
@@ -623,9 +667,9 @@ export class CiscoAgentLoop {
             };
         }
 
-        if (commandCategory !== 'inspection' && this.lastCommandPerDevice[targetDeviceId].count > 3) {
+        if (this.lastCommandPerDevice[targetDeviceId].count > 3) {
             logger.error(`Loop detected on command "${cleanCommand}" on device ${targetDeviceId}.`);
-            this.injectToolResponse(call.id, 'execute_ios_command', `CRITICAL ERROR: Loop check block. You have run "${cleanCommand}" multiple times with errors. Re-verify your settings before retrying.`);
+            this.injectToolResponse(call.id, 'execute_ios_command', `CRITICAL ERROR: Loop check block. You have run "${cleanCommand}" multiple times. Re-evaluate your strategy and stop repeating the same command.`);
             return;
         }
 
@@ -635,6 +679,21 @@ export class CiscoAgentLoop {
             const allowed = await this.firewall.verifyWithHuman(cleanCommand, firewallResult.reason || 'High-risk token');
             if (!allowed) {
                 this.injectToolResponse(call.id, 'execute_ios_command', 'CRITICAL ERROR: Execution denied by administrator.');
+                return;
+            }
+        }
+
+        const userIntent = this.messages.find(m => m.role === 'user')?.content || '';
+        const intentValidation = IntentTranslator.validateCommandAgainstIntent(cleanCommand, userIntent);
+        if (!intentValidation.valid && commandCategory === 'configuration') {
+            this.injectToolResponse(call.id, 'execute_ios_command', `CRITICAL ERROR: Intent Translation Failed. ${intentValidation.reason}`);
+            return;
+        }
+
+        if (commandCategory === 'configuration') {
+            const preFlight = await this.digitalTwin.preFlightCheck([cleanCommand]);
+            if (!preFlight.success) {
+                this.injectToolResponse(call.id, 'execute_ios_command', `CRITICAL ERROR: Digital Twin Pre-Flight Failed.\nSimulator Output:\n${preFlight.output}`);
                 return;
             }
         }
@@ -682,6 +741,7 @@ export class CiscoAgentLoop {
                 });
                 
                 const promptAfterRollback = session.getState().prompt;
+                this.memoryManager.saveExperience(userIntent, [], [cleanCommand]);
                 this.injectToolResponse(
                     call.id,
                     'execute_ios_command',
@@ -711,6 +771,8 @@ export class CiscoAgentLoop {
                     status: 'SUCCESS',
                     outputSnippet: `${processedOutput}${diffSummary ? `\nState Changes:\n${diffSummary}` : ''}`
                 });
+
+                this.memoryManager.saveExperience(userIntent, [cleanCommand], []);
 
                 this.injectToolResponse(
                     call.id,
@@ -764,7 +826,7 @@ export class CiscoAgentLoop {
                 try {
                     vlansText = await session.execute(`${prefix}show vlan`);
                 } catch {
-                    // ignore
+                    
                 }
             }
 

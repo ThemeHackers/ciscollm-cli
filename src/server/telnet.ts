@@ -34,8 +34,8 @@ export function startTelnetServer(port: number, onLog: (msg: string) => void): n
                 onLog(`Telnet Authenticated user: "${username}"`);
                 
 
-                const welcomeBanner = `\r\nCisco IOS Software, C2960 Software (C2960-LANBASEK9-M), Version 15.0(2)SE4, RELEASE SOFTWARE (fc1)\r\nTechnical Support: http://www.cisco.com/techsupport\r\nCopyright (c) 1986-2013 by Cisco Systems, Inc.\r\nCompiled Wed 26-Jun-13 02:49 by prod_rel_team\r\n\r\n`;
-                socket.write(welcomeBanner + simulator.getPrompt());
+                const { BOOT_BANNER } = require('../shared/bootBanner');
+                socket.write(BOOT_BANNER.replace(/\n/g, '\r\n') + '\r\n\r\n         --- System Configuration Dialog ---\r\n\r\nWould you like to enter the initial configuration dialog? [yes/no]: no\r\n\r\n\r\nPress RETURN to get started!\r\n\r\n' + simulator.getPrompt());
 
                 const sysLogListener = (msg: string) => {
                     try {

@@ -5,6 +5,7 @@ import { SshSession } from '../../infrastructure/protocols/SshSession';
 import { TelnetSession } from '../../infrastructure/protocols/TelnetSession';
 import { LLMClient, LLMProvider } from '../../infrastructure/llm/LLMClient';
 import { logger, createSpinner } from '../ui/ui';
+import { runInteractiveWizard } from '../ui/interactiveWizard';
 
 export async function monitorAction(
     options: any,
@@ -43,6 +44,23 @@ export async function monitorAction(
     logger.info(`Initializing auto-healing monitoring in [${provider.toUpperCase()}] mode...`);
 
     if (!localType) localType = 'ollama';
+
+    // If connection info is missing, trigger the wizard (skipping goal prompt)
+    if (!com && !host) {
+        const answers = await runInteractiveWizard(options, false);
+        provider = answers.provider;
+        localType = answers.localType;
+        apiKey = answers.apiKey;
+        model = answers.model;
+        endpoint = answers.endpoint;
+        protocol = answers.protocol;
+        com = answers.com;
+        baud = answers.baud;
+        host = answers.host;
+        port = answers.port;
+        username = answers.username;
+        password = answers.password;
+    }
 
     coordinatorWrapper.active = new MultiAgentCoordinator();
 

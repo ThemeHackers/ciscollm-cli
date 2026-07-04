@@ -13,12 +13,10 @@ export class TransactionManager {
         const state = session.getState();
         
         if (state.currentMode === 'USER_EXEC') {
-            console.log(chalk.cyan('❯ Elevating to privileged mode for backup...'));
             await session.execute('enable');
         }
 
         try {
-            console.log(chalk.cyan('❯ Checking flash storage reachability...'));
             const flashCheck = await session.execute('dir flash:');
             if (flashCheck.includes('% Invalid') || flashCheck.includes('No such file') || flashCheck.includes('Error')) {
                 console.warn(chalk.yellow('[!] Flash storage is not accessible or not found. Skipping backup creation.'));
@@ -44,20 +42,18 @@ export class TransactionManager {
                 }
             }
 
-            console.log(chalk.cyan('❯ Creating device running-config backup on flash...'));
+
             const rawOutput = await session.execute(`copy running-config ${this.backupFilename}`);
             
             if (rawOutput.includes('Destination filename') || rawOutput.includes('?')) {
                 const confirmOutput = await session.execute('');
                 if (confirmOutput.includes('copied') || confirmOutput.includes('OK')) {
                     this.backupCreated = true;
-                    console.log(chalk.green('[+] Running configuration backup successfully created.'));
                 } else {
                     console.warn(chalk.yellow('[!] Backup confirmation response did not confirm copy completion.'));
                 }
             } else if (rawOutput.includes('copied') || rawOutput.includes('OK')) {
                 this.backupCreated = true;
-                console.log(chalk.green('[+] Running configuration backup successfully created.'));
             } else {
                 console.warn(chalk.yellow('[!] Failed to backup running-config. Flash may be missing or read-only.'));
             }

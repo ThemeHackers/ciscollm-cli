@@ -11,3 +11,4 @@ pnpm-debug.log*
 Thumbs.db
 .mock-state-*.json
 openapi.json
+memory.json

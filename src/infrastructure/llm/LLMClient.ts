@@ -107,6 +107,18 @@ export class LLMClient {
         return Math.ceil(text.length / 3.8);
     }
 
+    private isHallucinating(text: string): boolean {
+        const lines = text.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 5);
+        if (lines.length >= 4) {
+            const last = lines[lines.length - 1];
+         
+            if (lines[lines.length - 2] === last && lines[lines.length - 3] === last) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private estimateCompletionTokens(message: ChatMessage): number {
         let text = message.content || '';
         if (message.reasoning_content) {
@@ -199,9 +211,11 @@ export class LLMClient {
         let fullReasoning = '';
         const toolCallsAccumulator: any[] = [];
         let streamUsage: any = undefined;
+        let isAborted = false;
 
         return new Promise((resolve, reject) => {
             stream.on('data', (chunk: Buffer) => {
+                if (isAborted) return;
                 buffer += decoder.write(chunk);
                 const lines = buffer.split('\n');
                 buffer = lines.pop() || '';
@@ -235,6 +249,27 @@ export class LLMClient {
 
                             if (contentChunk || reasoningChunk) {
                                 onChunk({ content: contentChunk, reasoning: reasoningChunk });
+                            }
+
+             
+                            if (toolCallsAccumulator.length === 0 && this.isHallucinating(fullReasoning + fullContent)) {
+                                isAborted = true;
+                                stream.destroy();
+                                const duration_ms = Math.max(1, Date.now() - startTime);
+                                const err = new Error('LLM_HALLUCINATION_LOOP');
+                                (err as any).partialMessage = {
+                                    role: 'assistant',
+                                    content: fullContent,
+                                    reasoning_content: fullReasoning,
+                                    usage: {
+                                        prompt_tokens: this.estimatePromptTokens(messages),
+                                        completion_tokens: this.estimateCompletionTokens({ role: 'assistant', content: fullContent, reasoning_content: fullReasoning }),
+                                        total_tokens: 0,
+                                        duration_ms: duration_ms,
+                                        tok_sec: 0
+                                    }
+                                };
+                                return reject(err);
                             }
 
                             if (delta.tool_calls) {
@@ -377,13 +412,13 @@ export class LLMClient {
         const args: Record<string, any> = {};
         let toolName = 'execute_ios_command';
 
-        // 1. Try to find a JSON block in markdown
+      
         const jsonBlockRegex = /```json\s*([\s\S]*?)\s*```/i;
         const jsonMatch = jsonBlockRegex.exec(content) || /(\{[\s\S]*?\})/.exec(content);
         if (jsonMatch) {
             try {
                 const parsed = JSON.parse(jsonMatch[1].trim());
-                // Check if it's formatted as standard OpenAI tool call
+            
                 if (parsed.function && typeof parsed.function === 'object') {
                     const funcName = parsed.function.name;
                     const funcArgs = typeof parsed.function.arguments === 'string' 
@@ -402,7 +437,7 @@ export class LLMClient {
                     }
                 }
                 
-                // Or if it's a direct dictionary of parameters
+
                 if (parsed.command) {
                     args.command = parsed.command;
                     if (parsed.device) args.device = parsed.device;
@@ -433,7 +468,7 @@ export class LLMClient {
                     toolName = 'define_shell_function';
                 }
 
-                // If we extracted args from direct JSON
+             
                 if (Object.keys(args).length > 0) {
                     message.tool_calls = [{
                         id: `parsed_${Math.random().toString(36).substring(2, 11)}`,
@@ -446,11 +481,11 @@ export class LLMClient {
                     return;
                 }
             } catch (e) {
-                // Ignore JSON parsing errors and proceed to XML/Parameter parsing fallback
+             
             }
         }
 
-        // 2. Try XML parameter-based parsing
+
         const paramRegex = /<parameter=(\w+)>\s*([\s\S]*?)\s*<\/parameter>/g;
         let match;
         while ((match = paramRegex.exec(content)) !== null) {
@@ -459,7 +494,7 @@ export class LLMClient {
             args[key] = val;
         }
 
-        // Try direct XML tags like <execute_ios_command>show ip route</execute_ios_command>
+       
         const xmlCommandRegex = /<execute_ios_command>\s*([\s\S]*?)\s*<\/execute_ios_command>/i;
         const xmlCommandMatch = xmlCommandRegex.exec(content);
         if (xmlCommandMatch) {

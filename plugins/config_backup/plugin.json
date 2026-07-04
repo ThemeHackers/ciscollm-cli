@@ -1,0 +1,13 @@
+{
+    "name": "config_backup",
+    "description": "Backs up the running configuration of a device to a centralized TFTP/SFTP server.",
+    "script": "python backup.py",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "hostname": { "type": "string", "description": "Hostname of the device" },
+            "config_text": { "type": "string", "description": "The raw configuration text to backup" }
+        },
+        "required": ["hostname", "config_text"]
+    }
+}

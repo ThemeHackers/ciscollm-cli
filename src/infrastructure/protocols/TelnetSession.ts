@@ -8,6 +8,7 @@ export class TelnetSession extends BaseSession {
     private socket: net.Socket | null = null;
     private buffer: string = '';
     private eventEmitter = new EventEmitter();
+    private isConnecting: boolean = true;
 
     constructor(
         private config: {
@@ -68,6 +69,7 @@ export class TelnetSession extends BaseSession {
                     for (const cmd of paginationCommands) {
                         await this.execute(cmd).catch(() => {});
                     }
+                    this.isConnecting = false;
                     resolve();
                     return;
                 }
@@ -111,7 +113,9 @@ export class TelnetSession extends BaseSession {
 
         for (const line of completedLines) {
             if (/%[A-Za-z0-9_]+-[0-7]-[A-Za-z0-9_]+:/.test(line)) {
-                console.log(chalk.yellow(`[Syslog Notification] ${line}`));
+                if (!this.isConnecting) {
+                    console.log(chalk.yellow(`[Syslog Notification] ${line}`));
+                }
                 this.emitNotification(line);
             } else {
                 remainingLines.push(line);

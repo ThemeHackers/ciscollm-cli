@@ -1,0 +1,14 @@
+{
+    "name": "servicenow_ticket",
+    "description": "Creates an incident ticket in ServiceNow for network outages or changes.",
+    "script": "python ticket.py",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "title": { "type": "string", "description": "Short description of the incident" },
+            "description": { "type": "string", "description": "Detailed description of the issue or change" },
+            "impact": { "type": "integer", "description": "1 (High) to 3 (Low)" }
+        },
+        "required": ["title", "description", "impact"]
+    }
+}

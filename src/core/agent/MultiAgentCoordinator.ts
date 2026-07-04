@@ -41,11 +41,9 @@ export class MultiAgentCoordinator extends EventEmitter {
     }
 
     public async connectAll(): Promise<void> {
-        console.log(chalk.cyan(`❯ Establishing parallel connections to ${this.sessions.size} target device(s)...`));
         const promises = Array.from(this.sessions.entries()).map(async ([id, session]) => {
             try {
                 await session.connect();
-                console.log(chalk.green(`[+] Device "${id}" connected successfully.`));
             } catch (err: any) {
                 throw new Error(`Device "${id}" failed to connect: ${err.message}`);
             }

@@ -7,25 +7,15 @@ import { logger } from './cli/ui/ui';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
-// Import CLI command actions
+
 import { runAction } from './cli/commands/runCommand';
 import { monitorAction } from './cli/commands/monitorCommand';
 import { serverAction } from './cli/commands/serverCommand';
-import { shellAction } from './cli/commands/shellCommand';
-import { dashboardAction } from './cli/commands/dashboardCommand';
 
 const program = new Command();
 const coordinatorWrapper: { active: MultiAgentCoordinator | null } = { active: null };
-const dashboardWrapper: { server: any } = { server: null };
 
 const cleanup = async () => {
-    if (dashboardWrapper.server) {
-        try {
-            dashboardWrapper.server.close();
-            logger.info('Live Visual Control Dashboard server closed.');
-        } catch {}
-        dashboardWrapper.server = null;
-    }
     if (coordinatorWrapper.active) {
         logger.info('Cleaning up active terminal connections and sub-processes...');
         try {
@@ -81,52 +71,43 @@ program
     .description('Autonomous Agent Interface managing local Cisco Hardware using LLM Tooling.')
     .version(cliVersion);
 
-program
+function addConnectionOptions(cmd: Command) {
+    return cmd
+        .option('--protocol <type>', 'Connection protocol (serial | ssh | telnet)', 'serial')
+        .option('--provider <type>', 'LLM provider mode (local | cloud)', 'local')
+        .option('--api-key <key>', 'API key for cloud provider (OpenRouter)')
+        .option('-c, --com <ports>', 'COM Port interface identifier(s), comma-separated (e.g. COM3 or COM3,COM4)')
+        .option('-b, --baud <rate>', 'Serial transmission baud rate constraint', '9600')
+        .option('--host <address>', 'Target IP address or hostname (comma-separated for multi-device)')
+        .option('--port <port>', 'Target connection port')
+        .option('-u, --username <name>', 'Device login username')
+        .option('-p, --password <pass>', 'Device login password')
+        .option('--env-password', 'Read device password from $CISCOLLM_PASS environment variable (safe for special chars)')
+        .option('--private-key <path>', 'SSH private key file path for protocols that support key-based auth')
+        .option('--passphrase <passphrase>', 'Passphrase for the SSH private key file')
+        .option('--local-type <type>', 'Local service type (ollama | lmstudio)')
+        .option('--model <name>', 'Model name for compilation')
+        .option('--endpoint <url>', 'Ollama/LM Studio/compatibility API server endpoint')
+        .option('--sessions <name>', 'Session name to save/load connection setup');
+}
+
+const runCmd = program
     .command('run')
-    .description('Execute network configuration or optimization tasks on target Cisco hardware')
-    .option('--protocol <type>', 'Connection protocol (serial | ssh | telnet)', 'serial')
-    .option('--provider <type>', 'LLM provider mode (local | cloud)', 'local')
-    .option('--api-key <key>', 'API key for cloud provider (OpenRouter)')
-    .option('-c, --com <ports>', 'COM Port interface identifier(s), comma-separated (e.g. COM3 or COM3,COM4)')
-    .option('-b, --baud <rate>', 'Serial transmission baud rate constraint', '9600')
-    .option('--host <address>', 'Target IP address or hostname (comma-separated for multi-device)')
-    .option('--port <port>', 'Target connection port')
-    .option('-u, --username <name>', 'Device login username')
-    .option('-p, --password <pass>', 'Device login password')
-    .option('--env-password', 'Read device password from $CISCOLLM_PASS environment variable (safe for special chars)')
-    .option('--private-key <path>', 'SSH private key file path for protocols that support key-based auth')
-    .option('--passphrase <passphrase>', 'Passphrase for the SSH private key file')
-    .option('--local-type <type>', 'Local service type (ollama | lmstudio)')
-    .option('--model <name>', 'Model name for compilation')
-    .option('--endpoint <url>', 'Ollama/LM Studio/compatibility API server endpoint')
+    .description('Execute network configuration or optimization tasks on target Cisco hardware');
+addConnectionOptions(runCmd)
     .option('--strict-command-ref', 'Enable strict command validation against cf_command_ref.pdf index')
     .option('--no-ref-telemetry', 'Disable command-reference telemetry logs during startup')
     .option('--non-interactive', 'Disable interactive human-in-the-loop prompts (automatically reject dangerous commands)')
     .option('--rbac-role <role>', 'Role-based Access Control role (admin | read_only)', 'admin')
-    .option('--dashboard-port <port>', 'Port to host the live Visual Control Dashboard', '3000')
     .option('-g, --goal <intent>', 'The execution goal for the agent to achieve')
     .action(async (options) => {
-        await runAction(options, coordinatorWrapper, dashboardWrapper, cleanup);
+        await runAction(options, coordinatorWrapper, cleanup);
     });
 
-program
+const monitorCmd = program
     .command('monitor')
-    .description('Start the Closed-Loop Auto-Diagnosis & Healing Monitor (AIOps)')
-    .option('--protocol <type>', 'Connection protocol (serial | ssh | telnet)', 'serial')
-    .option('--provider <type>', 'LLM provider mode (local | cloud)', 'local')
-    .option('--api-key <key>', 'API key for cloud provider (OpenRouter)')
-    .option('-c, --com <ports>', 'COM Port interface identifier(s), comma-separated (e.g. COM3 or COM3,COM4)')
-    .option('-b, --baud <rate>', 'Serial transmission baud rate constraint', '9600')
-    .option('--host <address>', 'Target IP address or hostname (comma-separated for multi-device)')
-    .option('--port <port>', 'Target connection port')
-    .option('-u, --username <name>', 'Device login username')
-    .option('-p, --password <pass>', 'Device login password')
-    .option('--env-password', 'Read device password from $CISCOLLM_PASS environment variable (safe for special chars)')
-    .option('--private-key <path>', 'SSH private key file path for protocols that support key-based auth')
-    .option('--passphrase <passphrase>', 'Passphrase for the SSH private key file')
-    .option('--local-type <type>', 'Local service type (ollama | lmstudio)')
-    .option('--model <name>', 'Model name for compilation')
-    .option('--endpoint <url>', 'Ollama/LM Studio/compatibility API server endpoint')
+    .description('Start the Closed-Loop Auto-Diagnosis & Healing Monitor (AIOps)');
+addConnectionOptions(monitorCmd)
     .option('--non-interactive', 'Enable completely autonomous, non-interactive healing')
     .option('--min-confidence <confidence>', 'Minimum AI confidence threshold to apply remediation', '0.80')
     .action(async (options) => {
@@ -143,19 +124,5 @@ program
         serverAction(options);
     });
 
-program
-    .command('shell')
-    .description('Launch the interactive Cisco IOS mock shell simulator directly')
-    .action(() => {
-        shellAction();
-    });
-
-program
-    .command('dashboard')
-    .description('Start the Visual Control Dashboard server standalone')
-    .option('--port <number>', 'Port for the dashboard server', '3000')
-    .action((options) => {
-        dashboardAction(options);
-    });
 
 program.parse(process.argv);

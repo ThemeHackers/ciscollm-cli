@@ -16,23 +16,29 @@
    * **Dry-Run Validation**: Analyzes network topology beforehand to prevent accidental disruptions.
    * **Strict Command Reference**: Restricts execution to valid Cisco IOS command sets indexed from `cf_command_ref.pdf`.
 
-3. **Closed-Loop Auto-Healing (AIOps)**
+3. **Multi-Device Orchestration Planner**
+   - **Execution Blueprint**: Before mutating configuration on multiple devices, the planner generates a structured, Terraform-like execution plan for human review.
+   - **Interactive Validation**: Prompts the user to approve, revise, or cancel the plan prior to hardware execution.
+
+4. **Plugin Extensibility System**
+   - Extend the CLI's native toolset with your own Python, Ansible, or Bash scripts.
+   - Simply drop a `plugin.json` in `~/.ciscollm/plugins` or `./plugins` and the Agent will dynamically load and execute it to interact with external enterprise systems.
+
+5. **Closed-Loop Auto-Healing (AIOps)**
    * Real-time monitoring of syslog notification events (interface state transitions, OSPF adjacency status changes).
    * Autonomous diagnosis, remediation planning, validation, and rollback via an AI-driven OODA loop.
    * **Livelock Prevention (Cooldown)**: Implements sliding-window rate-limiting (maximum 3 healing events within 10 minutes) that triggers a 15-minute cooldown period to protect devices from flapping interface infinite loops.
 
-4. **Atomic Transactions & Recovery**
+6. **Atomic Transactions & Recovery**
    * **Atomic Replace**: Backs up configuration to flash and uses `configure replace` to restore state on failures. Includes a **pre-flight flash space check** to ensure enough storage exists before performing backups.
    * **Command Inversion Fallback**: Generates reverse commands (e.g., `shutdown` -> `no shutdown`) to recover state if flash storage is unavailable.
 
-5. **Live Visualization & Audits**
-   * **Visual Control Dashboard**: A real-time SPA showing network topology maps, agent thinking logs, configuration diffs, and manual rollbacks.
-   * **State Diff Engine**: Displays colorized differences (green/red/yellow) in routing tables, VLANs, and interfaces.
+7. **Enterprise Audits**
    * **Enterprise Audit Log**: Local, structured audit logging (`audit.log` & `healing-audit.log`) for compliance.
 
-6. **Multi-Protocol Simulation & Adapters**
-   * Adapters for Serial (Plink), SSH, Telnet, NETCONF XML, and Cisco Modeling Labs (CML).
-   * Stateful mock IOS simulator server and local interactive shell (`ciscollm shell`).
+8. **Multi-Protocol Simulation & Adapters**
+   * Adapters for Serial (Plink), SSH, and Telnet.
+   * Stateful mock IOS simulator server for safe testing.
 
 ---
 
@@ -56,16 +62,10 @@ Run the interactive setup wizard to configure the agent target and goals:
 ciscollm run
 ```
 
-### Launching the Stateful Mock Cisco IOS Shell
-Launch the mock CLI simulator shell directly:
+### Launching the Agent
+Run the interactive setup wizard to configure the agent target and goals:
 ```bash
-ciscollm shell
-```
-
-### Starting the Visual Control Dashboard
-Start the visual dashboard standalone:
-```bash
-ciscollm dashboard --port 3000
+ciscollm run
 ```
 
 ---
@@ -78,7 +78,7 @@ Execute configuration or optimization tasks on target hardware.
 | Option / Flag | Description | Default |
 |---|---|---|
 | `-g, --goal <intent>` | Configuration goal. Omit to launch the Interactive Setup Wizard. | - |
-| `--protocol <type>` | Connection protocol (`serial`, `ssh`, `telnet`, `netconf`, `cml`). | `serial` |
+| `--protocol <type>` | Connection protocol (`serial`, `ssh`, `telnet`). | `serial` |
 | `--provider <type>` | LLM provider mode (`local`, `cloud`). | `local` |
 | `--local-type <type>` | Local LLM service flavor (`ollama`, `lmstudio`). | `ollama` |
 | `--model <name>` | LLM model name. | - |
@@ -93,15 +93,11 @@ Execute configuration or optimization tasks on target hardware.
 | `--env-password` | Read device password from `$CISCOLLM_PASS` environment variable. | `false` |
 | `--private-key <path>` | SSH private key file path. | - |
 | `--passphrase <passphrase>`| Passphrase for the SSH private key file. | - |
-| `--netconf-ready-timeout <ms>` | NETCONF SSH connection ready timeout. | - |
-| `--netconf-hello-timeout <ms>` | NETCONF hello exchange timeout. | - |
-| `--netconf-rpc-timeout <ms>`   | NETCONF RPC invocation timeout. | - |
-| `--netconf-keepalive-interval <ms>` | NETCONF SSH keepalive interval. | - |
 | `--strict-command-ref` | Block commands not listed in `cf_command_ref.pdf`. | `false` |
 | `--no-ref-telemetry` | Disable command-reference telemetry logs during startup. | `false` |
 | `--non-interactive` | Auto-reject high-risk commands instead of prompting for approval. | `false` |
 | `--rbac-role <role>` | Authorization role (`admin`, `read_only`). | `admin` |
-| `--dashboard-port <port>` | Live Visual Dashboard port. | `3000` |
+| `--sessions <name>` | Save or load the connection setup using a persistent session name. | - |
 
 ### 2. `ciscollm monitor [options]`
 Start the Closed-Loop Auto-Diagnosis & Healing Monitor (AIOps) to listen for device syslog events and heal outages autonomously.
@@ -128,8 +124,6 @@ Start the Closed-Loop Auto-Diagnosis & Healing Monitor (AIOps) to listen for dev
 
 ### Other Commands
 * `ciscollm server [options]` - Start mock SSH (`--ssh-port`), Telnet (`--telnet-port`), and HTTP LLM (`--http-port`) servers.
-* `ciscollm shell` - Launch a stateful interactive mock Cisco IOS command line directly.
-* `ciscollm dashboard [--port <port>]` - Start the visual dashboard standalone (default: 3000).
 
 ---
 

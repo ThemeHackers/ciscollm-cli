@@ -1,0 +1,12 @@
+{
+    "name": "bgp_analyzer",
+    "description": "Analyzes raw output of 'show ip bgp summary' and translates it into structured diagnostic data.",
+    "script": "python analyze.py",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "bgp_output": { "type": "string", "description": "Raw text output from 'show ip bgp summary'" }
+        },
+        "required": ["bgp_output"]
+    }
+}

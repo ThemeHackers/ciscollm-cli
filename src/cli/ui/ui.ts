@@ -168,12 +168,6 @@ export const logger = {
             console.log(applyHorizontalGradient(line));
         }
         console.log('');
-        
-        console.log(chalk.white('Tips for getting started:'));
-        console.log(chalk.gray('1. Define configuration goals clearly.'));
-        console.log(chalk.gray('2. Ensure hardware serial or network connections are active.'));
-        console.log(chalk.gray('3. Dangerous commands will require human authorization.'));
-        console.log('');
     },
     modelStatus: (model: string) => {
         console.log('\n' + chalk.gray.italic(`  Responding with ${model}`));

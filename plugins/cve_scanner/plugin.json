@@ -1,0 +1,15 @@
+{
+    "name": "cve_scanner",
+    "description": "Scans the provided Cisco IOS version against a vulnerability database for known CVEs.",
+    "script": "python scan.py",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "ios_version": {
+                "type": "string",
+                "description": "The Cisco IOS version string (e.g., 15.2(4)E6)"
+            }
+        },
+        "required": ["ios_version"]
+    }
+}

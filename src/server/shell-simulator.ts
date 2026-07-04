@@ -1553,8 +1553,7 @@ Success rate is 100 percent (5/5), round-trip min/avg/max = 1/1/4 ms
             .replace('TenGigabitEthernet', 'Te')
             .replace('Loopback', 'Lo')
             .replace('Ethernet', 'Eth')
-            .replace('Port-channel', 'Po')
-            .replace('Nve', 'Nve');
+            .replace('Port-channel', 'Po');
     }
 
     private getPrefixLength(mask: string): number {
