@@ -146,7 +146,7 @@ export async function runAction(
             console.log('');
         };
 
-        while (currentStep !== 'CONFIRMATION') {
+        while ((currentStep as string) !== 'CONFIRMATION') {
             refreshConsole();
             switch (currentStep as StepName) {
                 case 'PROVIDER': {
@@ -652,7 +652,7 @@ export async function runAction(
 
     } catch (err: any) {
         logger.critical(`Execution Error: ${err.message}`);
-    } else {
+    } finally {
         await cleanup();
         logger.info('Session Terminated. Pipelines detached.');
         process.exit(0);

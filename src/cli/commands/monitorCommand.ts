@@ -134,7 +134,7 @@ export async function monitorAction(
 
     } catch (err: any) {
         logger.critical(`Monitoring Error: ${err.message}`);
-    } else {
+    } finally {
         await cleanup();
         logger.info('Session Terminated. Pipelines detached.');
         process.exit(0);
