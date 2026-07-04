@@ -650,7 +650,7 @@ export class CiscoAgentLoop {
         try {
             const session = this.coordinator.getSession(targetDeviceId)!;
             const state = session.getState();
-            if (/^show\s+/i.test(cleanCommand) && (state.currentMode === 'GLOBAL_CONFIG' || state.currentMode === 'INTERFACE_CONFIG')) {
+            if (/^show\s+/i.test(cleanCommand) && state.currentMode.endsWith('_CONFIG')) {
                 await session.execute('end');
             }
 
@@ -741,7 +741,7 @@ export class CiscoAgentLoop {
 
         try {
             const state = session.getState();
-            const prefix = (state.currentMode === 'GLOBAL_CONFIG' || state.currentMode === 'INTERFACE_CONFIG') ? 'do ' : '';
+            const prefix = state.currentMode.endsWith('_CONFIG') ? 'do ' : '';
 
             let configText = '';
             try {

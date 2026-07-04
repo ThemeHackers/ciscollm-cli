@@ -199,7 +199,7 @@ export class TransactionManager {
                 const state = session.getState();
                 if (state.currentMode === 'USER_EXEC') {
                     await session.execute('enable');
-                } else if (state.currentMode === 'GLOBAL_CONFIG' || state.currentMode === 'INTERFACE_CONFIG') {
+                } else if (state.currentMode.endsWith('_CONFIG')) {
                     await session.execute('end');
                 }
                 
