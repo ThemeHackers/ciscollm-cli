@@ -17,7 +17,7 @@ function getTimestamp(): string {
     return chalk.dim(`[${now.toLocaleTimeString()}]`);
 }
 
-function printDashboard(httpPort: number) {
+function printDashboard(httpPort: number, simulatorsInfo: { name: string, sshPort: number, telnetPort: number }[]) {
     console.clear();
     console.log(chalk.bold.cyan(`
       :::::::::   ::::::::   ::::::::   ::::::::   ::::::::       ::::    ::::  ::::     ::::  
@@ -30,18 +30,19 @@ function printDashboard(httpPort: number) {
     `));
     console.log(chalk.bold.yellow('               Cisco IOS Multi-Protocol Test Simulator \n'));
     
-    console.log(chalk.cyan('┌─────────────────────────────────────────────────────────────────────────────┐'));
-    console.log(chalk.cyan('│') + chalk.bold.white('  PROTOCOL   │ PORT │ STATUS    │ CONNECTION URI                              ') + chalk.cyan('│'));
-    console.log(chalk.cyan('├────────────┼──────┼───────────┼─────────────────────────────────────────────┤'));
-    console.log(chalk.cyan('│') + `  SSH        ` + chalk.cyan('│') + ` 2222 ` + chalk.cyan('│') + chalk.bold.green('  ACTIVE   ') + chalk.cyan('│') + ` ssh://127.0.0.1:2222                         ` + chalk.cyan('│'));
-    console.log(chalk.cyan('│') + `  Telnet     ` + chalk.cyan('│') + ` 2323 ` + chalk.cyan('│') + chalk.bold.green('  ACTIVE   ') + chalk.cyan('│') + ` telnet://127.0.0.1:2323                      ` + chalk.cyan('│'));
-    console.log(chalk.cyan('│') + `  NETCONF    ` + chalk.cyan('│') + ` 2222 ` + chalk.cyan('│') + chalk.bold.green('  ACTIVE   ') + chalk.cyan('│') + ` netconf://127.0.0.1:2222 (Subsystem)         ` + chalk.cyan('│'));
-    const portStr = ` ${httpPort}`.padEnd(6);
-    const uriStr = ` http://127.0.0.1:${httpPort}/v1`.padEnd(46);
-    console.log(chalk.cyan('│') + `  HTTP (LLM) ` + chalk.cyan('│') + portStr + chalk.cyan('│') + chalk.bold.green('  ACTIVE   ') + chalk.cyan('│') + uriStr + chalk.cyan('│'));
-    console.log(chalk.cyan('└─────────────────────────────────────────────────────────────────────────────┘'));
+    console.log(chalk.cyan('┌─────────────────────────────────────────────────────────────────────────────────────────┐'));
+    console.log(chalk.cyan('│') + chalk.bold.white('  PROTOCOL   │ PORT │ DEVICE       │ CONNECTION URI                                   ') + chalk.cyan('│'));
+    console.log(chalk.cyan('├────────────┼──────┼──────────────┼──────────────────────────────────────────────────┤'));
+    for (const sim of simulatorsInfo) {
+        console.log(chalk.cyan('│') + `  SSH        ` + chalk.cyan('│') + ` ${sim.sshPort} ` + chalk.cyan('│') + ` ${sim.name.padEnd(12)} ` + chalk.cyan('│') + ` ssh://127.0.0.1:${sim.sshPort}                              `.padEnd(50) + chalk.cyan('│'));
+        console.log(chalk.cyan('│') + `  Telnet     ` + chalk.cyan('│') + ` ${sim.telnetPort} ` + chalk.cyan('│') + ` ${sim.name.padEnd(12)} ` + chalk.cyan('│') + ` telnet://127.0.0.1:${sim.telnetPort}                           `.padEnd(50) + chalk.cyan('│'));
+    }
+    console.log(chalk.cyan('├────────────┼──────┼──────────────┼──────────────────────────────────────────────────┤'));
+    console.log(chalk.cyan('│') + `  LM Studio  ` + chalk.cyan('│') + ` 1234 ` + chalk.cyan('│') + ` SYSTEM       ` + chalk.cyan('│') + ` http://127.0.0.1:1234/v1                         `.padEnd(50) + chalk.cyan('│'));
+    console.log(chalk.cyan('│') + `  Ollama     ` + chalk.cyan('│') + ` 11434` + chalk.cyan('│') + ` SYSTEM       ` + chalk.cyan('│') + ` http://127.0.0.1:11434/v1                        `.padEnd(50) + chalk.cyan('│'));
+    console.log(chalk.cyan('└─────────────────────────────────────────────────────────────────────────────────────────┘'));
     console.log(chalk.bold.magenta('\nLogs:'));
-    console.log(chalk.dim('-------------------------------------------------------------------------------'));
+    console.log(chalk.dim('-----------------------------------------------------------------------------------------'));
 }
 
 
@@ -241,27 +242,57 @@ function startHttpServer(port: number, logCb: (msg: string) => void, onBound: (a
 export function startSimulator(options: { sshPort: number; telnetPort: number; httpPort: number }) {
     let httpServer: http.Server | null = null;
     try {
-        const sshServer = startSshServer(options.sshPort, (msg) => {
-            log(`${chalk.bold.blue('[SSH]')} ${msg}`);
-        });
+        const { SwitchDevice } = require('./devices/SwitchDevice');
+        const { RouterDevice } = require('./devices/RouterDevice');
+        const { PCDevice } = require('./devices/PCDevice');
+        const { ASADevice } = require('./devices/ASADevice');
+        const { LinuxServerDevice } = require('./devices/LinuxServerDevice');
+        const { WLCDevice } = require('./devices/WLCDevice');
 
-        const telnetServer = startTelnetServer(options.telnetPort, (msg) => {
-            log(`${chalk.bold.yellow('[Telnet]')} ${msg}`);
+        const simulators = [
+            new SwitchDevice('Switch1'),
+            new RouterDevice('Router1'),
+            new PCDevice('PC1'),
+            new ASADevice('asa'),
+            new LinuxServerDevice('server1'),
+            new WLCDevice('WLC1')
+        ];
+
+        const simulatorsInfo: { name: string, sshPort: number, telnetPort: number }[] = [];
+
+        const sshServers: any[] = [];
+        const telnetServers: any[] = [];
+
+        simulators.forEach((simulator: any, i: number) => {
+            const currentSshPort = options.sshPort + i;
+            const currentTelnetPort = options.telnetPort + i;
+            
+            simulatorsInfo.push({
+                name: simulator.hostname,
+                sshPort: currentSshPort,
+                telnetPort: currentTelnetPort
+            });
+
+            sshServers.push(startSshServer(currentSshPort, (msg) => {
+                log(`${chalk.bold.blue(`[SSH:${simulator.hostname}]`)} ${msg}`);
+            }, simulator));
+
+            telnetServers.push(startTelnetServer(currentTelnetPort, (msg) => {
+                log(`${chalk.bold.yellow(`[Telnet:${simulator.hostname}]`)} ${msg}`);
+            }, simulator));
         });
 
         httpServer = startHttpServer(options.httpPort, (msg) => {
             log(msg);
         }, (actualPort) => {
-            printDashboard(actualPort);
+            printDashboard(actualPort, simulatorsInfo);
             log(`${chalk.bold.green('[HTTP]')} HTTP Server listening on port ${actualPort}`);
-            log(`${chalk.bold.blue('[SSH]')} SSH & NETCONF Server listening on port ${options.sshPort}`);
-            log(`${chalk.bold.yellow('[Telnet]')} Telnet Server listening on port ${options.telnetPort}`);
         });
 
         process.on('SIGINT', () => {
             log(chalk.red('Shutting down simulator servers...'));
-            sshServer.close();
-            telnetServer.close();
+            sshServers.forEach(s => s.close());
+            telnetServers.forEach(s => s.close());
             if (httpServer) httpServer.close();
             process.exit(0);
         });

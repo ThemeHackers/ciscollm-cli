@@ -1,13 +1,14 @@
-import { ShellSimulator } from '../../server/shell-simulator';
+import { SwitchDevice } from '../../server/devices/SwitchDevice';
 import { logger } from '../../cli/ui/ui';
 import chalk from 'chalk';
 
 export class DigitalTwin {
-    private simulator: ShellSimulator;
+    private simulator: SwitchDevice;
 
     constructor(initialHostname: string = 'Switch1') {
-        this.simulator = new ShellSimulator(initialHostname);
+        this.simulator = new SwitchDevice();
 
+        this.simulator.hostname = initialHostname;
         this.simulator.mode = 'PRIVILEGED_EXEC';
     }
 
@@ -20,7 +21,7 @@ export class DigitalTwin {
             const cmd = commands[i].trim();
             if (!cmd) continue;
 
-            const out = this.simulator.execute(cmd);
+            const out = this.simulator.processCommand(cmd);
             fullOutput += `> ${cmd}\n${out}\n`;
 
           

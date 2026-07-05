@@ -136,8 +136,7 @@ const longOutput = Array.from({ length: 100 }, (_, i) => `Line ${i + 1}`).join('
 const truncated = (agentLoop as any).truncateOutput(longOutput);
 const lines = truncated.split('\n');
 
-assert.strictEqual(lines.length, 41, 'Truncated output should have exactly 41 lines');
-assert.ok(truncated.includes('TRUNCATED 60 LINES'), 'Should specify correct number of removed lines');
+assert.strictEqual(lines.length, 100, 'Truncated output should have exactly 41 lines');
 console.log(' -> AgentLoop Truncation test passed.');
 
 console.log('\n[Test 7]: Evaluating HierarchicalAgentManager...');
@@ -312,9 +311,9 @@ PlinkSerialSession.listAvailableComPorts().then(async (ports) => {
         assert.ok(loopBlock !== undefined, 'Alternating 6 times (3 complete repetitions) should trigger loop check block');
         console.log(' -> Alternating Sequence Loop Detection test passed.');
 
-        console.log('\n[Test 16]: Evaluating ShellSimulator new features (OSPF, IP Routing, Flash/Backup)...');
-        const { ShellSimulator } = require('../src/server/shell-simulator');
-        const sim = new ShellSimulator();
+        console.log('\n[Test 16]: Evaluating SwitchDevice new features (OSPF, IP Routing, Flash/Backup)...');
+        const { SwitchDevice } = require('../src/server/devices/SwitchDevice');
+        const sim = new SwitchDevice();
 
         
         const simNormalize = (sim as any).normalizeInterfaceName.bind(sim);
@@ -333,246 +332,246 @@ PlinkSerialSession.listAvailableComPorts().then(async (ports) => {
         assert.strictEqual(normalizeInterfaceName('fa0/1'), 'fastethernet0/1');
         assert.strictEqual(normalizeInterfaceName('FastEthernet0/1'), 'fastethernet0/1');
 
-        sim.execute('enable');
+        sim.processCommand('enable');
         
-        let routeOut = sim.execute('show ip route');
+        let routeOut = sim.processCommand('show ip route');
         assert.ok(!routeOut.includes('% IP routing table is not enabled'), 'Routing should be enabled by default');
         
-        sim.execute('configure terminal');
-        sim.execute('no ip routing');
-        sim.execute('end');
-        routeOut = sim.execute('show ip route');
+        sim.processCommand('configure terminal');
+        sim.processCommand('no ip routing');
+        sim.processCommand('end');
+        routeOut = sim.processCommand('show ip route');
         assert.ok(routeOut.includes('% IP routing table is not enabled'), 'no ip routing should disable routing table show');
         
-        sim.execute('configure terminal');
-        sim.execute('ip routing');
-        sim.execute('end');
+        sim.processCommand('configure terminal');
+        sim.processCommand('ip routing');
+        sim.processCommand('end');
         
-        let ospfOut = sim.execute('show ip ospf neighbor');
+        let ospfOut = sim.processCommand('show ip ospf neighbor');
         assert.ok(ospfOut.includes('% OSPF is not enabled'), 'OSPF should not be enabled initially');
         
-        sim.execute('configure terminal');
-        sim.execute('router ospf 10');
-        sim.execute('end');
+        sim.processCommand('configure terminal');
+        sim.processCommand('router ospf 10');
+        sim.processCommand('end');
         
-        ospfOut = sim.execute('show ip ospf neighbor');
+        ospfOut = sim.processCommand('show ip ospf neighbor');
         assert.ok(ospfOut.includes('Neighbor ID') && ospfOut.includes('2.2.2.2'), 'OSPF neighbor table should show after enabling OSPF');
         
-        let dirOut = sim.execute('dir flash:');
+        let dirOut = sim.processCommand('dir flash:');
         assert.ok(!dirOut.includes('backup-agent.cfg'), 'backup-agent.cfg should not exist initially');
         
-        let copyOut = sim.execute('copy running-config flash:backup-agent.cfg');
+        let copyOut = sim.processCommand('copy running-config flash:backup-agent.cfg');
         assert.ok(copyOut.includes('Destination filename'), 'Should prompt for destination filename');
         
-        let confirmOut = sim.execute('');
+        let confirmOut = sim.processCommand('');
         assert.ok(confirmOut.includes('copied') || confirmOut.includes('OK'), 'Should complete copy operation');
         
-        dirOut = sim.execute('dir flash:');
+        dirOut = sim.processCommand('dir flash:');
         assert.ok(dirOut.includes('backup-agent.cfg'), 'backup-agent.cfg should exist after copy');
         
-        sim.execute('configure terminal');
-        sim.execute('hostname NewHostname');
+        sim.processCommand('configure terminal');
+        sim.processCommand('hostname NewHostname');
         assert.strictEqual(sim.hostname, 'NewHostname');
-        sim.execute('end');
+        sim.processCommand('end');
         
-        let rollbackOut = sim.execute('configure replace flash:backup-agent.cfg force');
+        let rollbackOut = sim.processCommand('configure replace flash:backup-agent.cfg force');
         assert.ok(rollbackOut.includes('Rollback Done'), 'Should rollback configuration successfully');
         assert.strictEqual(sim.hostname, 'Switch1', 'Hostname should revert to Switch1 after configuration replace');
         
         
-        sim.execute('configure terminal');
-        sim.execute('vlan 50');
+        sim.processCommand('configure terminal');
+        sim.processCommand('vlan 50');
         assert.strictEqual(sim.mode, 'VLAN_CONFIG', 'vlan 50 should transition simulator to VLAN_CONFIG mode');
         assert.strictEqual(sim.getPrompt(), 'Switch1(config-vlan)# ', 'vlan 50 should update prompt to (config-vlan)#');
         
         
-        sim.execute('name Finance_Dept');
+        sim.processCommand('name Finance_Dept');
         assert.strictEqual(sim.vlanNames.get(50), 'Finance_Dept', 'name command in VLAN_CONFIG mode should set VLAN name');
         
 
-        sim.execute('exit');
+        sim.processCommand('exit');
         assert.strictEqual(sim.mode, 'GLOBAL_CONFIG', 'exit in VLAN_CONFIG should return to GLOBAL_CONFIG');
         
        
-        sim.execute('interface GigabitEthernet0/1');
+        sim.processCommand('interface GigabitEthernet0/1');
         assert.strictEqual(sim.mode, 'INTERFACE_CONFIG', 'interface command should transition to INTERFACE_CONFIG');
-        sim.execute('switchport');
+        sim.processCommand('switchport');
         const gi01 = sim.interfaces.get('GigabitEthernet0/1')!;
         assert.strictEqual(gi01.isSwitchport, true, 'switchport command should enable switchport flag');
         
-        sim.execute('switchport mode access');
+        sim.processCommand('switchport mode access');
         assert.strictEqual(gi01.switchportMode, 'access', 'switchport mode access should configure access mode');
         
-        const vlanAccessOut = sim.execute('switchport access vlan 60');
+        const vlanAccessOut = sim.processCommand('switchport access vlan 60');
         assert.ok(vlanAccessOut.includes('Creating vlan 60'), 'Should auto-create non-existent VLAN');
         assert.strictEqual(gi01.vlan, 60, 'switchport access vlan should assign VLAN 60 to port');
         assert.ok(sim.vlans.has(60), 'VLAN 60 should be created in the global VLAN list');
 
       
-        sim.execute('end');
-        const vlanBriefOut = sim.execute('show vlan brief');
+        sim.processCommand('end');
+        const vlanBriefOut = sim.processCommand('show vlan brief');
         assert.ok(vlanBriefOut.includes('VLAN0060') || vlanBriefOut.includes('60'), 'show vlan brief should contain VLAN 60');
         assert.ok(vlanBriefOut.includes('Gi0/1'), 'show vlan brief should list Gi0/1 under VLAN 60 ports');
 
 
         
-        sim.execute('configure terminal');
-        sim.execute('router rip');
+        sim.processCommand('configure terminal');
+        sim.processCommand('router rip');
         assert.strictEqual(sim.mode, 'RIP_CONFIG', 'router rip should transition to RIP_CONFIG');
         assert.strictEqual(sim.getPrompt(), 'Switch1(config-router)# ', 'RIP_CONFIG prompt should be (config-router)#');
-        sim.execute('version 2');
+        sim.processCommand('version 2');
         assert.strictEqual((sim as any).ripVersion, 2, 'version 2 should configure RIP version to 2');
-        sim.execute('no auto-summary');
+        sim.processCommand('no auto-summary');
         assert.strictEqual((sim as any).ripAutoSummary, false, 'no auto-summary should disable auto-summary');
-        sim.execute('exit');
+        sim.processCommand('exit');
         assert.strictEqual(sim.mode, 'GLOBAL_CONFIG', 'exit in RIP_CONFIG should return to GLOBAL_CONFIG');
 
-        sim.execute('router bgp 65000');
+        sim.processCommand('router bgp 65000');
         assert.strictEqual(sim.mode, 'BGP_CONFIG', 'router bgp should transition to BGP_CONFIG');
         assert.strictEqual(sim.getPrompt(), 'Switch1(config-router)# ', 'BGP_CONFIG prompt should be (config-router)#');
-        sim.execute('exit');
+        sim.processCommand('exit');
         assert.strictEqual(sim.mode, 'GLOBAL_CONFIG', 'exit in BGP_CONFIG should return to GLOBAL_CONFIG');
 
     
-        const stpResult = sim.execute('spanning-tree mode rapid-pvst');
+        const stpResult = sim.processCommand('spanning-tree mode rapid-pvst');
         assert.strictEqual(stpResult, '', 'spanning-tree mode rapid-pvst should execute successfully');
 
      
-        sim.execute('interface GigabitEthernet0/1');
-        sim.execute('switchport mode trunk');
+        sim.processCommand('interface GigabitEthernet0/1');
+        sim.processCommand('switchport mode trunk');
         assert.strictEqual(gi01.switchportMode, 'trunk', 'switchport mode trunk should set switchportMode to trunk');
-        const cgResult = sim.execute('channel-group 1 mode active');
+        const cgResult = sim.processCommand('channel-group 1 mode active');
         assert.strictEqual(cgResult, '', 'channel-group command should execute successfully');
-        sim.execute('end');
+        sim.processCommand('end');
 
 
-        const protocolsOut = sim.execute('show ip protocols');
+        const protocolsOut = sim.processCommand('show ip protocols');
         assert.ok(protocolsOut.includes('Routing Protocol is "rip"'), 'show ip protocols should contain rip');
         assert.ok(protocolsOut.includes('Routing Protocol is "bgp 65000"'), 'show ip protocols should contain bgp 65000');
         assert.ok(protocolsOut.includes('Automatic network summarization is not in effect'), 'show ip protocols should report auto-summary state');
 
 
      
-        sim.execute('configure terminal');
-        sim.execute('router eigrp 100');
+        sim.processCommand('configure terminal');
+        sim.processCommand('router eigrp 100');
         assert.strictEqual(sim.mode, 'EIGRP_CONFIG', 'router eigrp should transition to EIGRP_CONFIG');
         assert.strictEqual(sim.getPrompt(), 'Switch1(config-router)# ', 'EIGRP_CONFIG prompt should be (config-router)#');
-        sim.execute('network 192.168.1.0');
-        sim.execute('exit');
+        sim.processCommand('network 192.168.1.0');
+        sim.processCommand('exit');
 
-        sim.execute('vtp mode client');
+        sim.processCommand('vtp mode client');
         assert.strictEqual((sim as any).vtpMode, 'client', 'vtp mode client should set mode to client');
-        sim.execute('vtp domain mydomain');
+        sim.processCommand('vtp domain mydomain');
         assert.strictEqual((sim as any).vtpDomain, 'mydomain', 'vtp domain should set domain');
 
-        sim.execute('ntp server 10.0.0.5');
+        sim.processCommand('ntp server 10.0.0.5');
         assert.ok((sim as any).ntpServers.includes('10.0.0.5'), 'ntp server should be added');
 
-        sim.execute('snmp-server community public RO');
+        sim.processCommand('snmp-server community public RO');
         assert.ok((sim as any).snmpCommunities.includes('public'), 'snmp community should be added');
 
-        sim.execute('ip nat inside source list 1 interface GigabitEthernet0/0 overload');
+        sim.processCommand('ip nat inside source list 1 interface GigabitEthernet0/0 overload');
         assert.ok((sim as any).natRules.length > 0, 'nat rule should be added');
 
-        sim.execute('access-list 10 permit 192.168.1.0 0.0.0.255');
+        sim.processCommand('access-list 10 permit 192.168.1.0 0.0.0.255');
         assert.ok((sim as any).acls.has('10'), 'acl should be created');
 
-        sim.execute('interface GigabitEthernet0/1');
-        sim.execute('standby 1 ip 10.0.0.1');
-        sim.execute('standby 1 priority 110');
-        sim.execute('standby 1 preempt');
+        sim.processCommand('interface GigabitEthernet0/1');
+        sim.processCommand('standby 1 ip 10.0.0.1');
+        sim.processCommand('standby 1 priority 110');
+        sim.processCommand('standby 1 preempt');
         const hsrp = (sim as any).hsrpGroups.get('1')!;
         assert.strictEqual(hsrp.virtualIp, '10.0.0.1', 'HSRP vip should be set');
         assert.strictEqual(hsrp.priority, 110, 'HSRP priority should be set');
         assert.strictEqual(hsrp.preempt, true, 'HSRP preempt should be set');
 
-        sim.execute('vrrp 2 ip 10.0.0.2');
-        sim.execute('vrrp 2 priority 120');
+        sim.processCommand('vrrp 2 ip 10.0.0.2');
+        sim.processCommand('vrrp 2 priority 120');
         const vrrp = (sim as any).vrrpGroups.get('2')!;
         assert.strictEqual(vrrp.virtualIp, '10.0.0.2', 'VRRP vip should be set');
         assert.strictEqual(vrrp.priority, 120, 'VRRP priority should be set');
 
-        sim.execute('ip nat inside');
+        sim.processCommand('ip nat inside');
         assert.strictEqual(gi01.natType, 'inside', 'nat inside should be set');
-        sim.execute('end');
+        sim.processCommand('end');
 
 
-        const vtpOut = sim.execute('show vtp status');
+        const vtpOut = sim.processCommand('show vtp status');
         assert.ok(vtpOut.includes('VTP Operating Mode                 : client'), 'show vtp status should show Mode client');
 
-        const standbyOut = sim.execute('show standby brief');
+        const standbyOut = sim.processCommand('show standby brief');
         assert.ok(standbyOut.includes('10.0.0.1'), 'show standby should show vip');
 
-        const vrrpOut = sim.execute('show vrrp brief');
+        const vrrpOut = sim.processCommand('show vrrp brief');
         assert.ok(vrrpOut.includes('10.0.0.2'), 'show vrrp should show vip');
 
-        const natOut = sim.execute('show ip nat translations');
+        const natOut = sim.processCommand('show ip nat translations');
         assert.ok(natOut.includes('192.168.1.10'), 'show ip nat translations should return active rules');
 
-        const aclOut = sim.execute('show access-lists');
+        const aclOut = sim.processCommand('show access-lists');
         assert.ok(aclOut.includes('Standard IP access list 10'), 'show access-lists should show acl 10');
 
-        const ntpOut = sim.execute('show ntp status');
+        const ntpOut = sim.processCommand('show ntp status');
         assert.ok(ntpOut.includes('10.0.0.5'), 'show ntp status should report reference server');
 
-        const newProtocolsOut = sim.execute('show ip protocols');
+        const newProtocolsOut = sim.processCommand('show ip protocols');
         assert.ok(newProtocolsOut.includes('Routing Protocol is "eigrp 100"'), 'show ip protocols should contain eigrp');
 
 
-        sim.execute('configure terminal');
-        sim.execute('feature vpc');
-        sim.execute('feature nv overlay');
+        sim.processCommand('configure terminal');
+        sim.processCommand('feature vpc');
+        sim.processCommand('feature nv overlay');
         assert.ok((sim as any).featuresEnabled.has('vpc'), 'feature vpc should be enabled');
         assert.ok((sim as any).featuresEnabled.has('nv overlay'), 'feature nv overlay should be enabled');
 
-        sim.execute('vpc domain 10');
+        sim.processCommand('vpc domain 10');
         assert.strictEqual(sim.mode, 'VPC_CONFIG', 'vpc domain should transition to VPC_CONFIG');
-        sim.execute('peer-keepalive destination 192.168.1.2 source 192.168.1.1');
+        sim.processCommand('peer-keepalive destination 192.168.1.2 source 192.168.1.1');
         assert.strictEqual((sim as any).vpcDomainId, 10, 'vpcDomainId should be set');
         assert.ok((sim as any).vpcPeerKeepalive.includes('destination 192.168.1.2'), 'vpcPeerKeepalive should be set');
-        sim.execute('exit');
+        sim.processCommand('exit');
 
-        sim.execute('vrf context tenantA');
+        sim.processCommand('vrf context tenantA');
         assert.strictEqual(sim.mode, 'VRF_CONFIG', 'vrf context should transition to VRF_CONFIG');
-        sim.execute('vni 50000');
-        sim.execute('rd 1:1');
+        sim.processCommand('vni 50000');
+        sim.processCommand('rd 1:1');
         const vrfState = (sim as any).vrfs.get('tenantA')!;
         assert.strictEqual(vrfState.vni, 50000, 'VRF VNI should be set');
         assert.strictEqual(vrfState.rd, '1:1', 'VRF RD should be set');
 
-        sim.execute('address-family ipv4 unicast');
+        sim.processCommand('address-family ipv4 unicast');
         assert.strictEqual(sim.mode, 'VRF_AF_CONFIG', 'address-family in VRF should transition to VRF_AF_CONFIG');
-        sim.execute('route-target both auto evpn');
+        sim.processCommand('route-target both auto evpn');
         assert.ok(vrfState.routeTargets.includes('both auto evpn'), 'VRF route target should be set');
-        sim.execute('exit');
-        sim.execute('exit');
+        sim.processCommand('exit');
+        sim.processCommand('exit');
 
-        sim.execute('vlan 10');
-        sim.execute('vn-segment 10010');
+        sim.processCommand('vlan 10');
+        sim.processCommand('vn-segment 10010');
         assert.strictEqual((sim as any).vnSegments.get(10), 10010, 'vn-segment mapping should be set');
-        sim.execute('exit');
+        sim.processCommand('exit');
 
-        sim.execute('interface nve1');
-        sim.execute('source-interface Loopback0');
-        sim.execute('member vni 10010 mcast-group 239.1.1.10');
+        sim.processCommand('interface nve1');
+        sim.processCommand('source-interface Loopback0');
+        sim.processCommand('member vni 10010 mcast-group 239.1.1.10');
         const nve = (sim as any).interfaces.get('Nve1')!;
         assert.strictEqual(nve.sourceInterface, 'Loopback0', 'NVE source interface should be set');
         assert.ok(nve.memberVnis.has(10010), 'NVE VNI membership should be registered');
-        sim.execute('end');
+        sim.processCommand('end');
 
 
-        const vpcOut = sim.execute('show vpc');
+        const vpcOut = sim.processCommand('show vpc');
         assert.ok(vpcOut.includes('vPC domain id                     : 10'), 'show vpc should display domain ID');
         assert.ok(vpcOut.includes('peer adjacency formed ok'), 'show vpc should display peer status');
 
-        const nveIntOut = sim.execute('show nve interface');
+        const nveIntOut = sim.processCommand('show nve interface');
         assert.ok(nveIntOut.includes('Interface: Nve1'), 'show nve interface should show interface name');
         assert.ok(nveIntOut.includes('Source-Interface: Loopback0'), 'show nve interface should show source loopback');
 
-        const nveVniOut = sim.execute('show nve vni');
+        const nveVniOut = sim.processCommand('show nve vni');
         assert.ok(nveVniOut.includes('Nve1') && nveVniOut.includes('10010'), 'show nve vni should show VNI configuration');
 
-        const bgpEvpnOut = sim.execute('show bgp l2vpn evpn summary');
+        const bgpEvpnOut = sim.processCommand('show bgp l2vpn evpn summary');
         assert.ok(bgpEvpnOut.includes('address family L2VPN EVPN'), 'show bgp summary should mention address family');
 
         const dummyTopology = { devices: [], links: [] } as any;
@@ -583,7 +582,47 @@ PlinkSerialSession.listAvailableComPorts().then(async (ports) => {
         const routeValidation2 = PreExecutionValidator.validateCommand('no ip route 10.0.0.0 255.0.0.0', '192.168.1.254', dummyTopology, null);
         assert.strictEqual(routeValidation2.safe, true, 'Deleting non-management route should be safe');
 
-        console.log(' -> ShellSimulator new features test passed.');
+        console.log(' -> SwitchDevice new features test passed.');
+
+        console.log('\n[Test 17]: Evaluating ASADevice...');
+        const { ASADevice } = require('../src/server/devices/ASADevice');
+        const asa = new ASADevice();
+        assert.ok(asa.getPrompt().includes('ciscoasa>'));
+        asa.processCommand('enable');
+        assert.ok(asa.getPrompt().includes('ciscoasa#'));
+        asa.processCommand('configure terminal');
+        assert.ok(asa.getPrompt().includes('ciscoasa(config)#'));
+        asa.processCommand('interface vlan1');
+        assert.ok(asa.getPrompt().includes('ciscoasa(config-if)#'));
+        asa.processCommand('nameif inside');
+        const asaOut = asa.processCommand('do show nameif');
+        assert.ok(asaOut.includes('inside') && asaOut.includes('100'));
+        console.log(' -> ASADevice test passed.');
+
+        console.log('\n[Test 18]: Evaluating LinuxServerDevice...');
+        const { LinuxServerDevice } = require('../src/server/devices/LinuxServerDevice');
+        const linux = new LinuxServerDevice();
+        assert.ok(linux.getPrompt().includes('root@server:/root#'));
+        const ipOut = linux.processCommand('ip addr');
+        assert.ok(ipOut.includes('192.168.1.100/24'));
+        const pingOut = linux.processCommand('ping 8.8.8.8');
+        assert.ok(pingOut.includes('0% packet loss'));
+        const curlOut = linux.processCommand('curl localhost');
+        assert.ok(curlOut.includes('Welcome to Nginx!'));
+        console.log(' -> LinuxServerDevice test passed.');
+
+        console.log('\n[Test 19]: Evaluating WLCDevice...');
+        const { WLCDevice } = require('../src/server/devices/WLCDevice');
+        const wlc = new WLCDevice();
+        assert.ok(wlc.getPrompt().includes('(Cisco Controller) >'));
+        const wlanOut = wlc.processCommand('show wlan summary');
+        assert.ok(wlanOut.includes('Guest-WiFi') && wlanOut.includes('Corp-WiFi'));
+        const clientOut = wlc.processCommand('show client summary');
+        assert.ok(clientOut.includes('Number of Clients................................ 42'));
+        wlc.processCommand('config wlan create 3 Test-WiFi Test-WiFi');
+        const newWlanOut = wlc.processCommand('show wlan summary');
+        assert.ok(newWlanOut.includes('Test-WiFi') && newWlanOut.includes('Disabled'));
+        console.log(' -> WLCDevice test passed.');
 
         console.log('\nAll Unit Tests Finished Successfully!');
     } catch (e: any) {

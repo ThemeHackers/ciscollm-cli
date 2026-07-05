@@ -43,9 +43,9 @@ export async function monitorAction(
     logger.banner();
     logger.info(`Initializing auto-healing monitoring in [${provider.toUpperCase()}] mode...`);
 
-    if (!localType) localType = 'ollama';
+    if (!localType) localType = 'lmstudio';
 
-    // If connection info is missing, trigger the wizard (skipping goal prompt)
+
     if (!com && !host) {
         const answers = await runInteractiveWizard(options, false);
         provider = answers.provider;

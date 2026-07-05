@@ -11,6 +11,7 @@ import { CiscoAgentLoop } from '../../core/agent/AgentLoop';
 import { logger, createSpinner } from '../ui/ui';
 import { runInteractiveWizard } from '../ui/interactiveWizard';
 import { NetworkPlanner } from '../../core/agent/NetworkPlanner';
+import { IntentTranslator } from '../../core/agent/IntentTranslator';
 export async function runAction(
     options: any,
     coordinatorWrapper: { active: MultiAgentCoordinator | null },
@@ -80,7 +81,7 @@ export async function runAction(
         }
     }
 
-    if (!localType) localType = 'ollama';
+    if (!localType) localType = 'lmstudio';
 
 
     let sessionName = options.sessions;
@@ -172,13 +173,29 @@ export async function runAction(
             }
             const hosts = host.split(',').map((h: string) => h.trim()).filter((h: string) => h.length > 0);
             for (const h of hosts) {
-                const session = new SshSession({
-                    host: h,
-                    port: port ? parseInt(port, 10) : 22,
-                    username: username,
-                    password: password
-                });
-                coordinatorWrapper.active.registerSession(h, session);
+                if (provider === 'local' && (h === '127.0.0.1' || h === 'localhost')) {
+
+                    const basePort = port ? parseInt(port, 10) : 2222;
+                    for (let i = 0; i < 6; i++) {
+                        const currentPort = basePort + i;
+                        const session = new SshSession({
+                            host: h,
+                            port: currentPort,
+                            username: username,
+                            password: password
+                        });
+                    
+                        coordinatorWrapper.active.registerSession(`${h}:${currentPort}`, session);
+                    }
+                } else {
+                    const session = new SshSession({
+                        host: h,
+                        port: port ? parseInt(port, 10) : 22,
+                        username: username,
+                        password: password
+                    });
+                    coordinatorWrapper.active.registerSession(h, session);
+                }
             }
         } else if (protocol === 'telnet') {
             if (!host) {
@@ -199,12 +216,12 @@ export async function runAction(
         }
 
         if (provider === 'local' && !endpoint) {
-            if (localType === 'lmstudio') {
-                endpoint = 'http://127.0.0.1:1234/v1';
-                logger.info(`LM Studio endpoint: ${chalk.cyan(endpoint)}`);
-            } else {
+            if (localType === 'ollama') {
                 endpoint = 'http://127.0.0.1:11434/v1';
                 logger.info(`Ollama endpoint: ${chalk.cyan(endpoint)}`);
+            } else {
+                endpoint = 'http://127.0.0.1:1234/v1';
+                logger.info(`LM Studio endpoint: ${chalk.cyan(endpoint)}`);
             }
         }
 
@@ -241,40 +258,57 @@ export async function runAction(
             throw err;
         }
 
-        const agent = new CiscoAgentLoop(localAIClient, coordinatorWrapper.active, {
-            strictReferenceMode: strictCommandRef,
-            referenceTelemetry: refTelemetry,
-            rbacRole: rbacRole
-        });
-        
-        const { wantToContinue } = await inquirer.prompt([
-            {
-                type: 'confirm',
-                name: 'wantToContinue',
-                message: chalk.cyan('Setup completed successfully. Do you want to continue chatting / start execution?'),
-                default: true
-            }
-        ]);
+        if (!goal) {
+            const { chatGoal } = await inquirer.prompt([
+                {
+                    type: 'input',
+                    name: 'chatGoal',
+                    message: 'Enter your goal or instruction:',
+                    validate: (input: string) => input.trim().length > 0 ? true : 'Goal cannot be empty.'
+                }
+            ]);
+            goal = chatGoal;
+        }
 
-        if (wantToContinue) {
-            if (!goal) {
-                const { chatGoal } = await inquirer.prompt([
-                    {
-                        type: 'input',
-                        name: 'chatGoal',
-                        message: 'Enter your goal or instruction:',
-                        validate: (input: string) => input.trim().length > 0 ? true : 'Goal cannot be empty.'
-                    }
-                ]);
-                goal = chatGoal;
-            }
+        const classSpinner = createSpinner('Analyzing intent complexity...').start();
+        const complexity = await IntentTranslator.categorizeComplexityWithLLM(localAIClient, goal);
+        classSpinner.stop();
+        let currentGoal = goal;
 
+        if (complexity === 'QUERY_ONLY') {
+            logger.info(chalk.cyan('🔍 Network Query Mode Enabled. Read-only commands expected.'));
+            const agent = new CiscoAgentLoop(localAIClient, coordinatorWrapper.active, {
+                strictReferenceMode: strictCommandRef,
+                referenceTelemetry: refTelemetry,
+                rbacRole: rbacRole,
+                fastTrack: true,
+                queryOnly: true,
+                safeMode: options.safeMode === true
+            });
+            await agent.run(`User Query (Read-Only): ${currentGoal}`);
+        } else if (complexity === 'FAST_TRACK') {
+            logger.info(chalk.green('🚀 Fast Track Execution Mode Enabled. Bypassing planner & backups.'));
+            const agent = new CiscoAgentLoop(localAIClient, coordinatorWrapper.active, {
+                strictReferenceMode: strictCommandRef,
+                referenceTelemetry: refTelemetry,
+                rbacRole: rbacRole,
+                fastTrack: true,
+                safeMode: options.safeMode === true
+            });
+            await agent.run(`User Goal (Fast Track): ${currentGoal}`);
+        } else {
+            const agent = new CiscoAgentLoop(localAIClient, coordinatorWrapper.active, {
+                strictReferenceMode: strictCommandRef,
+                referenceTelemetry: refTelemetry,
+                rbacRole: rbacRole,
+                safeMode: options.safeMode === true
+            });
             const planner = new NetworkPlanner(localAIClient, coordinatorWrapper.active);
             let planApproved = false;
-            let currentGoal = goal;
             
             while (!planApproved) {
                 const plan = await planner.generatePlan(currentGoal);
+                const impact = await planner.simulateImpact(plan);
                 
                 const { planAction } = await inquirer.prompt([
                     {
@@ -308,8 +342,6 @@ export async function runAction(
             }
 
             await agent.run(currentGoal);
-        } else {
-            logger.info('Exiting normally as requested.');
         }
 
     } catch (err: any) {

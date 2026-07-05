@@ -44,7 +44,7 @@ export async function runInteractiveWizard(options: any, requireGoal: boolean = 
         }
     }
 
-    if (!localType) localType = 'ollama';
+    if (!localType) localType = 'lmstudio';
 
     const detectedComs = await PlinkSerialSession.listAvailableComPorts();
 
@@ -69,7 +69,7 @@ export async function runInteractiveWizard(options: any, requireGoal: boolean = 
 
     const answers: any = {
         provider: provider || 'local',
-        localType: localType || 'ollama',
+        localType: localType || 'lmstudio',
         apiKey: apiKey || '',
         model: model || '',
         endpoint: endpoint || '',

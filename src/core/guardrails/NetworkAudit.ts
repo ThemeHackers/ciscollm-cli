@@ -78,7 +78,7 @@ export class NetworkAudit {
 
     public static renderAuditReport(before: AuditSnapshot, after: AuditSnapshot): string {
         let out = '';
-        out += chalk.bold.cyan('\n┌────────────────────────────────────────────────────────┐\n');
+        out += chalk.bold.cyan('\n\n\n┌────────────────────────────────────────────────────────┐\n');
         out += chalk.bold.cyan('│') + chalk.bold.white('          NETWORK CHANGE WINDOW AUDIT REPORT            ') + chalk.bold.cyan('│\n');
         out += chalk.bold.cyan('├──────────────────────────┬──────────────┬──────────────┤\n');
         out += chalk.bold.cyan('│') + chalk.bold.white(' METRIC                   ') + chalk.bold.cyan('│') + chalk.bold.white(' PRE-FLIGHT   ') + chalk.bold.cyan('│') + chalk.bold.white(' POST-FLIGHT  ') + chalk.bold.cyan('│\n');

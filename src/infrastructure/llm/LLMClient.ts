@@ -634,9 +634,8 @@ export class LLMClient {
                 const targetLower = this.modelName.toLowerCase();
                 const isLoaded = loadedModels.some(m => m.toLowerCase() === targetLower);
                 if (!isLoaded) {
-                    const oldModel = this.modelName;
                     this.modelName = loadedModels[0];
-                    console.log(chalk.blue(`❯ Dynamic Model Resolution: Auto-selected loaded model "${this.modelName}" (fallback from "${oldModel}")`));
+                    console.log(chalk.blue(`❯ Dynamic Model Resolution: Auto-selected loaded model "${this.modelName}"`));
                 }
             }
         } catch (err) {

@@ -1,7 +1,7 @@
-import * as net from 'net';
-import { ShellSimulator } from './shell-simulator';
+import net from 'net';
+import { BaseDevice, simulatorEvents } from './devices/BaseDevice';
 
-export function startTelnetServer(port: number, onLog: (msg: string) => void): net.Server {
+export function startTelnetServer(port: number, onLog: (msg: string) => void, simulator: BaseDevice): net.Server {
     const server = net.createServer((socket) => {
         onLog(`Telnet Connection established from ${socket.remoteAddress}:${socket.remotePort}`);
 
@@ -16,8 +16,6 @@ export function startTelnetServer(port: number, onLog: (msg: string) => void): n
         let password = '';
         let lineBuffer = '';
         let lastWasCr = false;
-        
-        const simulator = new ShellSimulator();
 
         const handleLine = () => {
             socket.write('\r\n');
@@ -42,7 +40,7 @@ export function startTelnetServer(port: number, onLog: (msg: string) => void): n
                         socket.write(`\r\n${msg}\r\n` + simulator.getPrompt());
                     } catch {}
                 };
-                const { simulatorEvents } = require('./shell-simulator');
+                const { simulatorEvents } = require('./devices/BaseDevice');
                 simulatorEvents.on('syslog', sysLogListener);
 
                 socket.on('close', () => {
@@ -57,7 +55,7 @@ export function startTelnetServer(port: number, onLog: (msg: string) => void): n
                 }
 
                 try {
-                    const output = simulator.execute(cmd);
+                    const output = simulator.processCommand(cmd);
                     if (output) {
                         socket.write(output.replace(/\n/g, '\r\n') + '\r\n');
                     }

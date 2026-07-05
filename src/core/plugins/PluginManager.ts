@@ -52,7 +52,6 @@ export class PluginManager {
                                         ...manifest,
                                         pluginDir
                                     });
-                                    logger.info(`Loaded plugin tool: ${manifest.name}`);
                                 } else {
                                     logger.warn(`Invalid plugin.json in ${pluginDir}. Missing required fields.`);
                                 }
@@ -65,6 +64,10 @@ export class PluginManager {
             } catch (e: any) {
                 logger.warn(`Failed to read plugin directory ${basePath}: ${e.message}`);
             }
+        }
+        
+        if (this.plugins.size > 0) {
+            logger.info(`Loaded ${this.plugins.size} plugin tool(s) automatically.`);
         }
     }
 

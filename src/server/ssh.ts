@@ -1,7 +1,6 @@
 import { Server } from 'ssh2';
 import { generateKeyPairSync } from 'crypto';
-import { ShellSimulator } from './shell-simulator';
-
+import { BaseDevice, simulatorEvents } from './devices/BaseDevice';
 
 const { privateKey } = generateKeyPairSync('rsa', {
     modulusLength: 2048,
@@ -9,15 +8,27 @@ const { privateKey } = generateKeyPairSync('rsa', {
     privateKeyEncoding: { type: 'pkcs1', format: 'pem' }
 });
 
-export function startSshServer(port: number, onLog: (msg: string) => void): Server {
+export function startSshServer(port: number, onLog: (msg: string) => void, simulator: BaseDevice): Server {
     const server = new Server({
         hostKeys: [privateKey]
     }, (client: any) => {
         let username = '';
 
         client.on('authentication', (ctx: any) => {
-            username = ctx.username;
-            onLog(`SSH Auth attempt: User "${ctx.username}" via method "${ctx.method}"`);
+            if (ctx.method === 'password') {
+                username = ctx.username;
+                if (ctx.username === 'admin' && ctx.password === 'admin') {
+                    return ctx.accept();
+                } else {
+                    return ctx.reject();
+                }
+            } else if (ctx.method === 'none') {
+                username = ctx.username;
+                return ctx.accept();
+            } else if (ctx.method === 'publickey') {
+                username = ctx.username;
+                return ctx.accept();
+            }
 
             ctx.accept();
         });
@@ -36,7 +47,6 @@ export function startSshServer(port: number, onLog: (msg: string) => void): Serv
                     const channel = accept();
                     onLog(`SSH Session: Shell channel opened for "${username}"`);
                     
-                    const simulator = new ShellSimulator();
                     let lineBuffer = '';
                     let lastWasCr = false;
 
@@ -48,7 +58,7 @@ export function startSshServer(port: number, onLog: (msg: string) => void): Serv
                             channel.write(`\r\n${msg}\r\n` + simulator.getPrompt());
                         } catch {}
                     };
-                    const { simulatorEvents } = require('./shell-simulator');
+                    const { simulatorEvents } = require('./devices/BaseDevice');
                     simulatorEvents.on('syslog', sysLogListener);
 
                     channel.on('close', () => {
@@ -67,7 +77,7 @@ export function startSshServer(port: number, onLog: (msg: string) => void): Serv
                         }
 
                         try {
-                            const output = simulator.execute(cmd);
+                            const output = simulator.processCommand(cmd);
                             if (output) {
 
                                 channel.write(output.replace(/\n/g, '\r\n') + '\r\n');

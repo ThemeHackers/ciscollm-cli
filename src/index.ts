@@ -7,12 +7,13 @@ import { logger } from './cli/ui/ui';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
-
 import { runAction } from './cli/commands/runCommand';
 import { monitorAction } from './cli/commands/monitorCommand';
 import { serverAction } from './cli/commands/serverCommand';
+import { daemonAction } from './cli/commands/daemonCommand';
 
 const program = new Command();
+
 const coordinatorWrapper: { active: MultiAgentCoordinator | null } = { active: null };
 
 const cleanup = async () => {
@@ -99,6 +100,7 @@ addConnectionOptions(runCmd)
     .option('--no-ref-telemetry', 'Disable command-reference telemetry logs during startup')
     .option('--non-interactive', 'Disable interactive human-in-the-loop prompts (automatically reject dangerous commands)')
     .option('--rbac-role <role>', 'Role-based Access Control role (admin | read_only)', 'admin')
+    .option('--safe-mode', 'Enable Auto-Rollback safety (reload in 5) for configuration tasks')
     .option('-g, --goal <intent>', 'The execution goal for the agent to achieve')
     .action(async (options) => {
         await runAction(options, coordinatorWrapper, cleanup);
@@ -112,6 +114,15 @@ addConnectionOptions(monitorCmd)
     .option('--min-confidence <confidence>', 'Minimum AI confidence threshold to apply remediation', '0.80')
     .action(async (options) => {
         await monitorAction(options, coordinatorWrapper, cleanup);
+    });
+
+const daemonCmd = program
+    .command('daemon')
+    .description('Start the Auto-Remediation Daemon to monitor the network continuously');
+addConnectionOptions(daemonCmd)
+    .option('--webhook-url <url>', 'Webhook URL for auto-remediation alerts')
+    .action(async (options) => {
+        await daemonAction(options, coordinatorWrapper, cleanup);
     });
 
 program

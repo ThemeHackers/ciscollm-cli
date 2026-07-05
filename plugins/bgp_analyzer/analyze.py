@@ -1,22 +1,31 @@
 import sys
 import json
 import re
+from typing import Dict, List, Any
 
-def main():
+def main() -> None:
     if len(sys.argv) < 2:
         print(json.dumps({"error": "Missing arguments"}))
         return
         
-    args = json.loads(sys.argv[1])
-    raw_output = args.get("bgp_output", "")
-   
+    try:
+        args: Dict[str, Any] = json.loads(sys.argv[1])
+    except json.JSONDecodeError as e:
+        print(json.dumps({"error": f"Invalid JSON argument: {str(e)}"}))
+        return
+
+    raw_output: str = args.get("bgp_output", "")
     
-    neighbors_down = []
-    neighbors_up = []
+    neighbors_down: List[Dict[str, str]] = []
+    neighbors_up: List[Dict[str, Any]] = []
     
-    lines = raw_output.strip().split('\n')
+    lines: List[str] = raw_output.strip().split('\n')
+    in_neighbor_section: bool = False
     
-    in_neighbor_section = False
+    # Improved Regex for parsing BGP IPv4/IPv6 neighbors
+    bgp_regex = re.compile(
+        r'^([a-fA-F0-9\.\:]+)\s+\d+\s+(\d+)\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+([0-9a-zA-Z\:]+)\s+([0-9a-zA-Z]+)'
+    )
     
     for line in lines:
         line = line.strip()
@@ -28,24 +37,15 @@ def main():
             continue
             
         if in_neighbor_section:
-
-            match = re.match(r'^([a-fA-F0-9\.\:]+)\s+\d+\s+(\d+)\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+([0-9a-zA-Z\:]+)\s+([0-9a-zA-Z]+)', line)
-            
+            match = bgp_regex.match(line)
             if not match:
-              
                 parts = line.split()
                 if len(parts) >= 10:
-                    neighbor_ip = parts[0]
-                    as_num = parts[2]
-                    uptime = parts[-2]
-                    state_or_pfx = parts[-1]
+                    neighbor_ip, as_num, uptime, state_or_pfx = parts[0], parts[2], parts[-2], parts[-1]
                 else:
                     continue
             else:
-                neighbor_ip = match.group(1)
-                as_num = match.group(2)
-                uptime = match.group(3)
-                state_or_pfx = match.group(4)
+                neighbor_ip, as_num, uptime, state_or_pfx = match.groups()
                 
             if state_or_pfx.isdigit():
                 neighbors_up.append({

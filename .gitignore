@@ -5,6 +5,13 @@ dist/
 *.log
 npm-debug.log*
 yarn-debug.log*
+node_modules/
+dist/
+.cache/
+.antigravitycli/
+*.log
+npm-debug.log*
+yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 .DS_Store
@@ -12,3 +19,5 @@ Thumbs.db
 .mock-state-*.json
 openapi.json
 memory.json
+__pycache__/
+plugins/config_backup/backups/  

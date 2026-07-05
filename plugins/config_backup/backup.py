@@ -3,8 +3,9 @@ import json
 import datetime
 import os
 import subprocess
+from typing import Dict, Any, List
 
-def run_cmd(cmd, cwd):
+def run_cmd(cmd: List[str], cwd: str) -> bool:
     try:
         subprocess.run(cmd, cwd=cwd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         return True
@@ -13,14 +14,19 @@ def run_cmd(cmd, cwd):
     except FileNotFoundError:
         return False 
 
-def main():
+def main() -> None:
     if len(sys.argv) < 2:
         print(json.dumps({"error": "Missing arguments"}))
         return
         
-    args = json.loads(sys.argv[1])
-    hostname = args.get("hostname", "unknown_device")
-    config = args.get("config_text", "")
+    try:
+        args: Dict[str, Any] = json.loads(sys.argv[1])
+    except json.JSONDecodeError as e:
+        print(json.dumps({"error": f"Invalid JSON argument: {str(e)}"}))
+        return
+
+    hostname: str = args.get("hostname", "unknown_device")
+    config: str = args.get("config_text", "")
     
     backup_dir = os.path.join(os.getcwd(), "backups")
     os.makedirs(backup_dir, exist_ok=True)
@@ -31,7 +37,6 @@ def main():
     with open(filepath, 'w') as f:
         f.write(config)
         
-
     git_msg = "Git is not installed or failed to initialize."
     has_git = False
     

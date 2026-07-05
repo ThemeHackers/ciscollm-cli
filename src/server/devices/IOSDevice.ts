@@ -1,7 +1,5 @@
-import { PROMPT_REGEX } from '../shared/constants';
-import { EventEmitter } from 'events';
-
-export const simulatorEvents = new EventEmitter();
+import { PROMPT_REGEX } from '../../shared/constants';
+import { BaseDevice, simulatorEvents } from './BaseDevice';
 
 export type CliMode = 'USER_EXEC' | 'PRIVILEGED_EXEC' | 'GLOBAL_CONFIG' | 'INTERFACE_CONFIG' | 'OSPF_CONFIG' | 'RIP_CONFIG' | 'BGP_CONFIG' | 'EIGRP_CONFIG' | 'DHCP_CONFIG' | 'ACL_CONFIG' | 'VLAN_CONFIG' | 'VPC_CONFIG' | 'VRF_CONFIG' | 'VRF_AF_CONFIG';
 
@@ -29,8 +27,7 @@ export interface RouteState {
     connected: boolean;
 }
 
-export class ShellSimulator {
-    public hostname: string = 'Switch1';
+export class IOSDevice extends BaseDevice {
     public mode: CliMode = 'USER_EXEC';
     public activeInterface: string | null = null;
     
@@ -147,7 +144,8 @@ export class ShellSimulator {
         this.vlanNames = this.backupState.vlanNames;
     }
 
-    constructor(initialHostname?: string) {
+    constructor(initialHostname?: string, type: string = 'ios') {
+        super(initialHostname || 'Switch1', type);
         if (initialHostname) {
             this.hostname = initialHostname;
         }
@@ -185,7 +183,7 @@ export class ShellSimulator {
         }
     }
 
-    public execute(line: string): string {
+    public processCommand(line: string): string {
         if (line.trim().endsWith('?')) {
             return this.getContextHelp(line);
         }
@@ -1277,6 +1275,14 @@ Total entries displayed: 1
 `;
             }
 
+            if (showCmd === 'interfaces' && showArgs[1] === 'status') {
+                return `Port      Name               Status       Vlan       Duplex  Speed Type
+Gi0/0     Management Uplink  connected    routed     a-full a-1000 10/100/1000BaseTX
+Gi0/1                        disabled     1            auto   auto 10/100/1000BaseTX
+Gi0/2                        disabled     1            auto   auto 10/100/1000BaseTX
+`;
+            }
+
             return `% Unrecognized show command: show ${showArgs.join(' ')}`;
         }
 
@@ -1346,7 +1352,7 @@ Success rate is 100 percent (5/5), round-trip min/avg/max = 1/1/4 ms
         const trimmed = line.trim();
         if (!trimmed) return '';
 
-        // If it starts with 'do ', we normalize the rest recursively
+      
         if (trimmed.toLowerCase().startsWith('do ')) {
             const rest = trimmed.substring(3);
             return 'do ' + this.normalizeCommandString(rest);
@@ -1357,7 +1363,7 @@ Success rate is 100 percent (5/5), round-trip min/avg/max = 1/1/4 ms
 
         let cmd = parts[0].toLowerCase();
 
-        // 1. First token abbreviation expansion
+      
         if (cmd === 'conf' || cmd === 'config' || cmd === 'configure') {
             parts[0] = 'configure';
             if (parts[1] && (parts[1].toLowerCase() === 't' || parts[1].toLowerCase() === 'term' || parts[1].toLowerCase() === 'terminal')) {
@@ -1387,7 +1393,7 @@ Success rate is 100 percent (5/5), round-trip min/avg/max = 1/1/4 ms
         } else if (cmd === 'sw' || cmd === 'swit' || cmd === 'switch' || cmd === 'switchport') {
             parts[0] = 'switchport';
         } else if (cmd === 'no') {
-            // Recurse for the remainder
+           
             if (parts.length > 1) {
                 const normalizedSub = this.normalizeCommandString(parts.slice(1).join(' '));
                 return 'no ' + normalizedSub;
@@ -1395,7 +1401,7 @@ Success rate is 100 percent (5/5), round-trip min/avg/max = 1/1/4 ms
             return trimmed;
         }
 
-        // 2. Sub-command expansion
+      
         cmd = parts[0].toLowerCase();
         if (cmd === 'show') {
             if (parts[1]) {
@@ -1585,23 +1591,23 @@ Success rate is 100 percent (5/5), round-trip min/avg/max = 1/1/4 ms
         const endsWithSpaceHelp = line.endsWith(' ?') || line.endsWith('  ?');
         const searchPrefix = trimmed.substring(0, trimmed.length - 1).trim();
 
-        // Normalize the search prefix to know what mode/command we are matching
+       
         const normalizedPrefix = this.normalizeCommandString(searchPrefix);
         const parts = normalizedPrefix.split(/\s+/).filter(Boolean);
 
-        // 1. Help for empty prompt (just '?')
+       
         if (parts.length === 0) {
             return this.getModeCommandsHelp();
         }
 
-        // 2. Help for a word prefix (e.g. "sh?" or "sw?")
+      
         if (!endsWithSpaceHelp) {
             const lastWord = parts[parts.length - 1].toLowerCase();
             const precedingPrefix = parts.slice(0, -1).join(' ');
             return this.getWordCompletionHelp(precedingPrefix, lastWord);
         }
 
-        // 3. Help for sub-commands (e.g. "show ?", "ip ?")
+
         const cmd = parts[0].toLowerCase();
         if (cmd === 'show') {
             if (parts.length === 1) {

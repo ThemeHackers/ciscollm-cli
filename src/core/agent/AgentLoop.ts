@@ -21,10 +21,13 @@ import { IntentTranslator } from './IntentTranslator';
 import { DigitalTwin } from './DigitalTwin';
 import { PluginManager } from '../plugins/PluginManager';
 
-type AgentLoopOptions = {
+export interface AgentLoopOptions {
     strictReferenceMode?: boolean;
     referenceTelemetry?: boolean;
     rbacRole?: string;
+    fastTrack?: boolean;
+    queryOnly?: boolean;
+    safeMode?: boolean;
 };
 
 type CommandCategory = 'inspection' | 'configuration' | 'other';
@@ -52,6 +55,14 @@ export class CiscoAgentLoop {
     private readonly topologyRefreshIntervalMs = 15000;
     private memoryManager = new MemoryManager();
     private digitalTwin = new DigitalTwin();
+    private agentDepthLimit: number = 2;
+    private maxTurnsLimit: number = 30;
+    
+    private consecutiveErrorType: string | null = null;
+    private consecutiveErrorCount: number = 0;
+    private fastTrack: boolean = false;
+    private queryOnly: boolean = false;
+    private safeMode: boolean = false;
 
     constructor(
         private llmClient: LLMClient,
@@ -59,7 +70,8 @@ export class CiscoAgentLoop {
         options: AgentLoopOptions = {}
     ) {
         this.options = options;
-        this.applyOptions(this.options);
+        this.commandReferenceEngine = new CommandReferenceEngine();
+        this.applyOptions(options);
     }
 
     private applyOptions(options: AgentLoopOptions): void {
@@ -74,6 +86,21 @@ export class CiscoAgentLoop {
         if (options.rbacRole) {
             this.rbacRole = options.rbacRole.toLowerCase();
         }
+
+        if (typeof options.fastTrack === 'boolean') {
+            this.fastTrack = options.fastTrack;
+        }
+
+        if (typeof options.queryOnly === 'boolean') {
+            this.queryOnly = options.queryOnly;
+            if (this.queryOnly) {
+                this.fastTrack = true; 
+            }
+        }
+        
+        if (typeof options.safeMode === 'boolean') {
+            this.safeMode = options.safeMode;
+        }
     }
 
     public async run(userGoal: string): Promise<void> {
@@ -85,28 +112,30 @@ export class CiscoAgentLoop {
 
         const networkAudit = new NetworkAudit(this.coordinator);
         const preFlightSnapshots = new Map<string, any>();
-        const auditSpinner = createSpinner('Running Pre-Flight Network Audits...').start();
-        for (const deviceId of this.coordinator.getSessions().keys()) {
-            try {
-                const snap = await networkAudit.takeSnapshot(deviceId);
-                preFlightSnapshots.set(deviceId, snap);
-            } catch (e: any) {
-                logger.warn(`Pre-flight audit failed for ${deviceId}: ${e.message}`);
+        
+        if (!this.fastTrack) {
+            const auditSpinner = createSpinner('Running Pre-Flight Network Audits...').start();
+            for (const deviceId of this.coordinator.getSessions().keys()) {
+                try {
+                    const snap = await networkAudit.takeSnapshot(deviceId);
+                    preFlightSnapshots.set(deviceId, snap);
+                } catch (e: any) {
+                    logger.warn(`Pre-flight audit failed for ${deviceId}: ${e.message}`);
+                }
             }
-        }
-        auditSpinner.succeed('Pre-Flight Network Audits completed.');
+            auditSpinner.succeed('Pre-Flight Network Audits completed.');
 
-        const backupSpinner = createSpinner('Initializing device configuration backups to flash...').start();
-        try {
-            
-            for (const [id, session] of this.coordinator.getSessions().entries()) {
-                const tx = new TransactionManager();
-                await tx.initializeBackup(session);
-                this.transactions.set(id, tx);
+            const backupSpinner = createSpinner('Initializing device configuration backups to flash...').start();
+            try {
+                for (const [id, session] of this.coordinator.getSessions().entries()) {
+                    const tx = new TransactionManager();
+                    await tx.initializeBackup(session);
+                    this.transactions.set(id, tx);
+                }
+                backupSpinner.succeed('Atomic configuration backups initialized.');
+            } catch (e: any) {
+                backupSpinner.warn(`Backup initialization skipped or partially completed: ${e.message}`);
             }
-            backupSpinner.succeed('Atomic configuration backups initialized.');
-        } catch (e: any) {
-            backupSpinner.warn(`Backup initialization skipped or partially completed: ${e.message}`);
         }
 
         this.strictReferenceMode = this.commandReferenceEngine.isStrictModeEnabled();
@@ -124,6 +153,18 @@ export class CiscoAgentLoop {
             refSpinner.warn('Cisco command reference hints unavailable. Continuing with base policy.');
         }
 
+        if (this.safeMode && !this.queryOnly) {
+            const safeSpinner = createSpinner('Applying Safe-Mode Auto-Rollback protection (reload in 5)...').start();
+            try {
+                for (const [id, session] of this.coordinator.getSessions().entries()) {
+                    await session.execute('reload in 5\n\n');
+                }
+                safeSpinner.succeed('Safe-Mode activated. Rollback scheduled in 5 minutes if not cancelled.');
+            } catch (e: any) {
+                safeSpinner.warn(`Could not set Safe-Mode: ${e.message}`);
+            }
+        }
+
         const stateInfo = this.buildStateInfoString();
         const topologyInfo = await this.buildTopologyInfoString();
         const memoryInfo = this.memoryManager.retrieveRelevantExperience(userGoal);
@@ -131,7 +172,7 @@ export class CiscoAgentLoop {
         
         this.messages.push({
             role: 'system',
-            content: PromptEngine.getSystemPrompt(stateInfo, this.commandHints, this.strictReferenceMode, topologyInfo, memoryInfo)
+            content: PromptEngine.getSystemPrompt(stateInfo, this.commandHints, this.strictReferenceMode, topologyInfo, memoryInfo, this.queryOnly)
         });
         
         this.messages.push({ role: 'user', content: userGoal });
@@ -149,7 +190,7 @@ export class CiscoAgentLoop {
             const memoryInfo = this.memoryManager.retrieveRelevantExperience(userGoal);
             this.messages[0] = {
                 role: 'system',
-                content: PromptEngine.getSystemPrompt(updatedStateInfo, this.commandHints, this.strictReferenceMode, updatedTopologyInfo, memoryInfo)
+                content: PromptEngine.getSystemPrompt(updatedStateInfo, this.commandHints, this.strictReferenceMode, updatedTopologyInfo, memoryInfo, this.queryOnly)
             };
 
         
@@ -222,22 +263,6 @@ export class CiscoAgentLoop {
             try {
                 response = await this.llmClient.generateCompletion(this.getMessagesForLlm(), activeTools, onChunk);
                 
-                isThinking = false;
-                if (gpuTimer) clearInterval(gpuTimer);
-                
-                if (hasStartedStreaming) {
-                    if (wrapper) {
-                        wrapper.flush();
-                    }
-                    const totalWidth = getTerminalWidth();
-                    const bottomBorder = chalk.blue('└' + '─'.repeat(Math.max(0, totalWidth - 1)));
-                    console.log('\n' + bottomBorder + '\n');
-                } else {
-                    const finalGpu = await this.getGpuInfoAsync();
-                    const gpuSuffix = finalGpu ? ` [GPU: ${finalGpu}]` : '';
-                    modelSpinner.succeed(`[Step ${executionDepth}/${MAX_STEPS}] Thinking complete.${gpuSuffix}`);
-                }
-
                 if (response.usage) {
                     totalPromptTokens += response.usage.prompt_tokens;
                     totalCompletionTokens += response.usage.completion_tokens;
@@ -255,16 +280,6 @@ export class CiscoAgentLoop {
                 
                 this.messages.push(response);
             } catch (err: any) {
-                isThinking = false;
-                if (gpuTimer) clearInterval(gpuTimer);
-                
-                if (hasStartedStreaming) {
-                    if (wrapper) wrapper.flush();
-                    const totalWidth = getTerminalWidth();
-                    const bottomBorder = chalk.blue('└' + '─'.repeat(Math.max(0, totalWidth - 1)));
-                    console.log('\n' + bottomBorder + '\n');
-                }
-
                 if (err.message && err.message.includes('LLM_HALLUCINATION_LOOP')) {
                     modelSpinner.warn(`[Step ${executionDepth}/${MAX_STEPS}] Anti-Hallucination triggered: LLM stuck in a reasoning loop.`);
                     logger.warn('The AI agent got stuck in a repetitive thought loop and was forcefully aborted.');
@@ -273,11 +288,27 @@ export class CiscoAgentLoop {
                         this.messages.push(err.partialMessage);
                     }
                     dynamicLoopActive = false;
-                    break; // Break out of the execution loop safely
+                    break; 
                 }
 
                 modelSpinner.fail(`[Step ${executionDepth}/${MAX_STEPS}] LLM Client failed to respond.`);
                 throw err;
+            } finally {
+                isThinking = false;
+                if (gpuTimer) clearInterval(gpuTimer);
+                
+                if (hasStartedStreaming) {
+                    if (wrapper) {
+                        wrapper.flush();
+                    }
+                    const totalWidth = getTerminalWidth();
+                    const bottomBorder = chalk.blue('└' + '─'.repeat(Math.max(0, totalWidth - 1)));
+                    console.log('\n' + bottomBorder + '\n');
+                } else {
+                    const finalGpu = await this.getGpuInfoAsync();
+                    const gpuSuffix = finalGpu ? ` [GPU: ${finalGpu}]` : '';
+                    modelSpinner.succeed(`[Step ${executionDepth}/${MAX_STEPS}] Thinking complete.${gpuSuffix}`);
+                }
             }
 
             if (response.tool_calls && response.tool_calls.length > 0) {
@@ -295,7 +326,7 @@ export class CiscoAgentLoop {
                 const lastMutatedDevice = this.findLastMutatedDevice();
                 const hasRunPing = this.messages.some(m => m.role === 'tool' && m.name === 'ping_test');
                 
-                if (lastMutatedDevice && !hasRunPing) {
+                if (lastMutatedDevice && !hasRunPing && !this.queryOnly) {
                     this.validationNudgeCount++;
                     logger.info('Agent finished configuration without running validation ping. Enforcing closed-loop validation...');
 
@@ -331,20 +362,34 @@ export class CiscoAgentLoop {
             logger.warn('Maximum loop steps limit reached.');
         }
 
-        const postAuditSpinner = createSpinner('Running Post-Flight Network Audits...').start();
-        for (const [deviceId, preSnap] of preFlightSnapshots.entries()) {
+        if (this.safeMode && !this.queryOnly) {
+            const cancelSpinner = createSpinner('Validating Safe-Mode... Cancelling auto-rollback.').start();
             try {
-                const postSnap = await networkAudit.takeSnapshot(deviceId);
-                postAuditSpinner.stop();
-                this.coordinator.recordAudit(deviceId, preSnap, postSnap);
-                const report = NetworkAudit.renderAuditReport(preSnap, postSnap);
-                console.log(report);
+                for (const [id, session] of this.coordinator.getSessions().entries()) {
+                    await session.execute('reload cancel');
+                }
+                cancelSpinner.succeed('Auto-rollback cancelled successfully. Configuration is safe.');
             } catch (e: any) {
-                postAuditSpinner.stop();
-                logger.warn(`Post-flight audit failed for ${deviceId}: ${e.message}`);
+                cancelSpinner.warn(`Failed to cancel auto-rollback: ${e.message}`);
             }
         }
-        if (postAuditSpinner.isSpinning) postAuditSpinner.stop();
+
+        if (!this.fastTrack) {
+            const postAuditSpinner = createSpinner('Running Post-Flight Network Audits...').start();
+            for (const [deviceId, preSnap] of preFlightSnapshots.entries()) {
+                try {
+                    const postSnap = await networkAudit.takeSnapshot(deviceId);
+                    postAuditSpinner.stop();
+                    this.coordinator.recordAudit(deviceId, preSnap, postSnap);
+                    const report = NetworkAudit.renderAuditReport(preSnap, postSnap);
+                    console.log(report);
+                } catch (e: any) {
+                    postAuditSpinner.stop();
+                    logger.warn(`Post-flight audit failed for ${deviceId}: ${e.message}`);
+                }
+            }
+            if (postAuditSpinner.isSpinning) postAuditSpinner.stop();
+        }
 
         const totalDurationMs = Date.now() - totalStartTime;
         const avgLlmSpeed = totalLlmDurationMs > 0 ? (totalCompletionTokens / (totalLlmDurationMs / 1000)) : 0;
@@ -490,6 +535,14 @@ export class CiscoAgentLoop {
             }
             const match = devices.find(d => d.toLowerCase() === requestedDevice.toLowerCase());
             if (match) return match;
+
+            const states = this.coordinator.getAllStates();
+            for (const [id, state] of Object.entries(states)) {
+                if (state.hostname && state.hostname.toLowerCase() === requestedDevice.toLowerCase()) {
+                    return id;
+                }
+            }
+
             throw new Error(`Device "${requestedDevice}" is not recognized. Available devices: ${devices.join(', ')}`);
         }
 
@@ -627,6 +680,22 @@ export class CiscoAgentLoop {
         }
 
      
+        const destructiveRegex = /^(erase|reload|write erase|format)/i;
+        if (destructiveRegex.test(cleanCommand.trim())) {
+            const inquirer = require('inquirer');
+            const { confirmDestructive } = await inquirer.prompt([
+                {
+                    type: 'input',
+                    name: 'confirmDestructive',
+                    message: chalk.red.bold(`[WARNING] Destructive command detected: "${cleanCommand}". Type "CONFIRM" to proceed:`),
+                }
+            ]);
+            if (confirmDestructive !== 'CONFIRM') {
+                this.injectToolResponse(call.id, 'execute_ios_command', `CRITICAL ERROR: Execution denied by user. Command "${cleanCommand}" was blocked.`);
+                return;
+            }
+        }
+
         const tx = this.transactions.get(targetDeviceId);
         const currentInterface = tx ? (tx as any).targetInterface : null;
         const dryRunCheck = PreExecutionValidator.validateCommand(
@@ -718,6 +787,20 @@ export class CiscoAgentLoop {
 
             const verification = ErrorAnalyzer.checkOutput(processedOutput);
             if (verification.hasError) {
+                if (this.consecutiveErrorType === verification.errorType) {
+                    this.consecutiveErrorCount++;
+                } else {
+                    this.consecutiveErrorType = verification.errorType;
+                    this.consecutiveErrorCount = 1;
+                }
+
+                if (this.consecutiveErrorCount >= 3) {
+                    cmdSpinner.stop();
+                    logger.error(`Infinite Error Loop Detected: Triggered ${verification.errorType} 3 times in a row. Aborting loop to save tokens.`);
+                    this.injectToolResponse(call.id, 'execute_ios_command', `CRITICAL ERROR: Execution aborted. The command resulted in "${verification.errorType}" 3 times consecutively. Do not repeat this strategy.`);
+                    return;
+                }
+
                 cmdSpinner.stop();
                 logger.toolBox(`execute_ios_command running "${cleanCommand}" on ${targetDeviceId}`, `IOS Error [${verification.errorType}]:\n${processedOutput}`, false);
                 
@@ -739,6 +822,7 @@ export class CiscoAgentLoop {
                     status: 'ROLLBACK',
                     reason: `Rollback triggered by error ${verification.errorType}. Reverted state successfully.`
                 });
+
                 
                 const promptAfterRollback = session.getState().prompt;
                 this.memoryManager.saveExperience(userIntent, [], [cleanCommand]);
@@ -1020,21 +1104,20 @@ export class CiscoAgentLoop {
     }
 
     private truncateOutput(output: string): string {
-        const MAX_LINES = 50;
+        const MAX_LINES = 100;
         const lines = output.split(/\r?\n/);
         
         if (lines.length <= MAX_LINES) {
             return output;
         }
 
-        const keepLines = 20;
+        const keepLines = 40;
         const firstPart = lines.slice(0, keepLines);
         const lastPart = lines.slice(lines.length - keepLines);
-        const removedLinesCount = lines.length - (keepLines * 2);
 
         return [
             ...firstPart,
-            `[... TRUNCATED ${removedLinesCount} LINES OF TERMINAL OUTPUT TO PREVENT CONTEXT WINDOW OVERFLOW ...]`,
+            `\n[...Output Truncated to prevent Context Overflow...]`,
             ...lastPart
         ].join('\n');
     }
