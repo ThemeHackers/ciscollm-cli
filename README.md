@@ -4,14 +4,6 @@
 
 ---
 
-## 🆕 What's New in v1.3.5
-- **Enhanced Multi-Device Orchestration**: The agent now intelligently resolves Target Devices by `Hostname` (e.g. `Router1`, `Switch1`), allowing seamless configuration execution across complex topologies without tracking IP/Port pairs.
-- **Improved UI & Audit Rendering**: Terminal layout glitches and visual collisions during AI stream generation and Network Audit Reporting have been completely eliminated via guaranteed layout isolation (`finally` teardown wrappers).
-- **Anti-Hallucination & Robustness Upgrades**: Introduced infinite-loop detection and smart ping fallbacks if the LLM repeatedly hallucinates non-tool responses.
-- **Advanced Topology Simulator**: Broken out into scalable, modular device profiles (`IOSDevice`, `ASADevice`, `SwitchDevice`, `WLCDevice`, `LinuxServerDevice`).
-
----
-
 ## 🚀 Core Capabilities
 
 1. **Intelligent Cisco Automation Swarm**
@@ -70,12 +62,6 @@ Run the interactive setup wizard to configure the agent target and goals:
 ciscollm run
 ```
 
-### Launching the Agent
-Run the interactive setup wizard to configure the agent target and goals:
-```bash
-ciscollm run
-```
-
 ---
 
 ## 🛠️ CLI Usage & Options
@@ -105,6 +91,7 @@ Execute configuration or optimization tasks on target hardware.
 | `--no-ref-telemetry` | Disable command-reference telemetry logs during startup. | `false` |
 | `--non-interactive` | Auto-reject high-risk commands instead of prompting for approval. | `false` |
 | `--rbac-role <role>` | Authorization role (`admin`, `read_only`). | `admin` |
+| `--safe-mode` | Enable auto-rollback protection for configuration tasks. | `false` |
 | `--sessions <name>` | Save or load the connection setup using a persistent session name. | - |
 
 ### 2. `ciscollm monitor [options]`
@@ -132,6 +119,7 @@ Start the Closed-Loop Auto-Diagnosis & Healing Monitor (AIOps) to listen for dev
 
 ### Other Commands
 * `ciscollm server [options]` - Start mock SSH (`--ssh-port`), Telnet (`--telnet-port`), and HTTP LLM (`--http-port`) servers.
+* `ciscollm daemon [options]` - Start the auto-remediation daemon with the same connection options as `run`/`monitor`, plus optional `--webhook-url` alerting.
 
 ---
 

@@ -28,6 +28,23 @@ COMPLIANCE RULES
 6. Anti-Loop/Overthinking: DO NOT overthink or repeat your reasoning. Once you decide on the next command, execute the TOOL CALL immediately. Do not output repetitive thoughts without calling a tool.
 7. Multi-Device Operations: If a task requires changes on multiple nodes (e.g. OSPF, links), you MUST execute commands on all necessary nodes before declaring success. The execute_ios_command tool accepts a 'deviceId' parameter—ensure you specify the correct node from the topology.
 ${queryOnly ? '8. READ ONLY MODE: You are answering a question. Only use inspection commands (show, ping, etc). DO NOT enter config mode.\n' : ''}
+
+ACL QUICK REFERENCE
+- IOS extended ACL deny ICMP between subnets:
+   configure terminal
+   access-list 100 deny icmp 172.16.0.0 0.0.0.255 10.0.0.0 0.0.0.3
+   interface GigabitEthernet0/1
+   ip access-group 100 in
+- IOS named extended ACL alternative:
+   ip access-list extended BLOCK_ICMP
+   deny icmp 172.16.0.0 0.0.0.255 10.0.0.0 0.0.0.3
+   permit ip any any
+   interface GigabitEthernet0/1
+   ip access-group BLOCK_ICMP in
+- ASA rule allowing TCP 443 to a server subnet:
+   access-list OUTSIDE_IN extended permit tcp any 192.168.1.0 255.255.255.0 eq 443
+   access-group OUTSIDE_IN in interface outside
+
 HOW TO CALL TOOLS (IMPORTANT)
 You must invoke tools to execute commands or tests. You can do this in three ways:
 1. Native Tool Calling (Preferred).

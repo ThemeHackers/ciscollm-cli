@@ -1,7 +1,7 @@
 import { readFileSync, existsSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import { logger } from '../../cli/ui/ui';
 
 export interface PluginDefinition {
@@ -90,6 +90,20 @@ export class PluginManager {
         return this.plugins.has(name);
     }
 
+    public static parseScriptCommand(script: string): { command: string; args: string[] } {
+        const parts = script.match(/(?:[^"\s]+|"[^"]*")+/g) || [];
+        const tokens = parts.map((part) => part.replace(/^"(.*)"$/, '$1'));
+
+        if (tokens.length === 0) {
+            throw new Error('Plugin script is empty.');
+        }
+
+        return {
+            command: tokens[0],
+            args: tokens.slice(1)
+        };
+    }
+
     public executePlugin(name: string, args: any): Promise<string> {
         return new Promise((resolve) => {
             const def = this.plugins.get(name);
@@ -106,10 +120,15 @@ export class PluginManager {
             if (process.platform === 'win32') {
                 argsJson = argsJson.replace(/\\"/g, '""');
             }
-            
-            const command = `${def.script} "${argsJson}"`;
 
-            exec(command, { cwd: def.pluginDir, env }, (error, stdout, stderr) => {
+            let commandParts: { command: string; args: string[] };
+            try {
+                commandParts = PluginManager.parseScriptCommand(def.script);
+            } catch (error: any) {
+                return resolve(`Error: Invalid plugin script for ${name}: ${error.message}`);
+            }
+
+            execFile(commandParts.command, [...commandParts.args, argsJson], { cwd: def.pluginDir, env }, (error, stdout, stderr) => {
                 if (error) {
                     resolve(`PLUGIN ERROR:\n${stderr || error.message}`);
                 } else {

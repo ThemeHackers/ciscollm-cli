@@ -1,4 +1,5 @@
 import inquirer from 'inquirer';
+import * as readline from 'readline';
 import chalk from 'chalk';
 import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { join } from 'path';
@@ -12,6 +13,52 @@ import { logger, createSpinner } from '../ui/ui';
 import { runInteractiveWizard } from '../ui/interactiveWizard';
 import { NetworkPlanner } from '../../core/agent/NetworkPlanner';
 import { IntentTranslator } from '../../core/agent/IntentTranslator';
+
+/**
+ * Multi-line goal input: press Enter twice (empty line) to submit.
+ */
+function readMultiLineGoal(): Promise<string> {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: true });
+    const lines: string[] = [];
+
+    process.stdout.write(
+        chalk.cyan('? ') +
+        chalk.bold('Enter your goal or instruction') +
+        chalk.dim(' (press Enter twice to submit):\n> ')
+    );
+
+    return new Promise((resolve, reject) => {
+        rl.on('line', (line) => {
+            if (line === '' && lines.length > 0) {
+                // Blank line after content = submit
+                rl.close();
+                const goal = lines.join('\n').trim();
+                resolve(goal);
+            } else if (line === '') {
+                // Leading blank line, ignore
+                process.stdout.write(chalk.dim('> '));
+            } else {
+                lines.push(line);
+                process.stdout.write(chalk.dim('> '));
+            }
+        });
+
+        rl.on('close', () => {
+            const goal = lines.join('\n').trim();
+            if (!goal) {
+                reject(new Error('Goal cannot be empty.'));
+            } else {
+                resolve(goal);
+            }
+        });
+
+        rl.on('SIGINT', () => {
+            rl.close();
+            process.emit('SIGINT');
+        });
+    });
+}
+
 export async function runAction(
     options: any,
     coordinatorWrapper: { active: MultiAgentCoordinator | null },
@@ -259,15 +306,7 @@ export async function runAction(
         }
 
         if (!goal) {
-            const { chatGoal } = await inquirer.prompt([
-                {
-                    type: 'input',
-                    name: 'chatGoal',
-                    message: 'Enter your goal or instruction:',
-                    validate: (input: string) => input.trim().length > 0 ? true : 'Goal cannot be empty.'
-                }
-            ]);
-            goal = chatGoal;
+            goal = await readMultiLineGoal();
         }
 
         const classSpinner = createSpinner('Analyzing intent complexity...').start();

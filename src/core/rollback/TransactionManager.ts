@@ -9,7 +9,7 @@ export class TransactionManager {
     private backupCreated = false;
     private readonly backupFilename = 'flash:backup-agent.cfg';
 
-    public async initializeBackup(session: BaseSession): Promise<void> {
+    public async initializeBackup(session: BaseSession): Promise<boolean> {
         const state = session.getState();
         
         if (state.currentMode === 'USER_EXEC') {
@@ -18,9 +18,9 @@ export class TransactionManager {
 
         try {
             const flashCheck = await session.execute('dir flash:');
-            if (flashCheck.includes('% Invalid') || flashCheck.includes('No such file') || flashCheck.includes('Error')) {
+            if (flashCheck.includes('% Invalid') || flashCheck.includes('No such file') || flashCheck.includes('Error') || flashCheck.includes('Unrecognized')) {
                 console.warn(chalk.yellow('[!] Flash storage is not accessible or not found. Skipping backup creation.'));
-                return;
+                return false;
             }
 
           
@@ -38,7 +38,7 @@ export class TransactionManager {
                 const requiredMargin = Math.max(50000, configSize * 1.5);
                 if (freeBytes < requiredMargin) {
                     console.warn(chalk.yellow(`[!] Flash space is too low: only ${freeBytes} bytes free (required safety margin: ${requiredMargin} bytes). Skipping backup creation to prevent write failures.`));
-                    return;
+                    return false;
                 }
             }
 
@@ -49,16 +49,21 @@ export class TransactionManager {
                 const confirmOutput = await session.execute('');
                 if (confirmOutput.includes('copied') || confirmOutput.includes('OK')) {
                     this.backupCreated = true;
+                    return true;
                 } else {
                     console.warn(chalk.yellow('[!] Backup confirmation response did not confirm copy completion.'));
+                    return false;
                 }
             } else if (rawOutput.includes('copied') || rawOutput.includes('OK')) {
                 this.backupCreated = true;
+                return true;
             } else {
                 console.warn(chalk.yellow('[!] Failed to backup running-config. Flash may be missing or read-only.'));
+                return false;
             }
         } catch (err: any) {
             console.warn(chalk.yellow(`[!] Backup creation skipped/failed: ${err.message}`));
+            return false;
         }
     }
 

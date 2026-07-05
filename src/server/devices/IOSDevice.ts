@@ -17,6 +17,8 @@ export interface InterfaceState {
     vpcMemberId?: number;
     sourceInterface?: string;
     memberVnis?: Map<number, { mcastGroup?: string; associateVrf?: boolean }>;
+    inboundAcl?: string;
+    outboundAcl?: string;
 }
 
 export interface RouteState {
@@ -115,6 +117,7 @@ export class IOSDevice extends BaseDevice {
         routes: RouteState[];
         vlans: Set<number>;
         vlanNames: Map<number, string>;
+        acls: Map<string, string[]>;
     } | null = null;
 
     private saveBackupState(): void {
@@ -125,13 +128,18 @@ export class IOSDevice extends BaseDevice {
         const routesCopy = this.routes.map(r => ({ ...r }));
         const vlansCopy = new Set(this.vlans);
         const vlanNamesCopy = new Map(this.vlanNames);
+        const aclsCopy = new Map<string, string[]>();
+        for (const [aclId, rules] of this.acls.entries()) {
+            aclsCopy.set(aclId, [...rules]);
+        }
 
         this.backupState = {
             hostname: this.hostname,
             interfaces: interfacesCopy,
             routes: routesCopy,
             vlans: vlansCopy,
-            vlanNames: vlanNamesCopy
+            vlanNames: vlanNamesCopy,
+            acls: aclsCopy
         };
     }
 
@@ -142,6 +150,7 @@ export class IOSDevice extends BaseDevice {
         this.routes = this.backupState.routes;
         this.vlans = this.backupState.vlans;
         this.vlanNames = this.backupState.vlanNames;
+        this.acls = this.backupState.acls;
     }
 
     constructor(initialHostname?: string, type: string = 'ios') {
@@ -565,6 +574,18 @@ show the available options.`;
                 return '';
             }
 
+            if (cmd === 'ip' && args[1] === 'access-group' && args[2] && (args[3] === 'in' || args[3] === 'out')) {
+                const interfaceState = this.activeInterface ? this.interfaces.get(this.activeInterface) : null;
+                if (interfaceState) {
+                    if (args[3] === 'in') {
+                        interfaceState.inboundAcl = args[2];
+                    } else {
+                        interfaceState.outboundAcl = args[2];
+                    }
+                }
+                return '';
+            }
+
             if (cmd === 'access-list' && args[1] && args[2]) {
                 const aclId = args[1];
                 const rule = args.slice(2).join(' ');
@@ -572,6 +593,21 @@ show the available options.`;
                     this.acls.set(aclId, []);
                 }
                 this.acls.get(aclId)!.push(rule);
+                return '';
+            }
+
+            if (cmd === 'no' && args[1] === 'access-list' && args[2] && args[3]) {
+                const aclId = args[2];
+                const rule = args.slice(3).join(' ');
+                const existing = this.acls.get(aclId);
+                if (existing) {
+                    const filtered = existing.filter(entry => entry.trim().toLowerCase() !== rule.toLowerCase());
+                    if (filtered.length > 0) {
+                        this.acls.set(aclId, filtered);
+                    } else {
+                        this.acls.delete(aclId);
+                    }
+                }
                 return '';
             }
 
@@ -696,6 +732,24 @@ show the available options.`;
                 return '';
             }
 
+            if (cmd === 'ip' && args[1] === 'access-group' && args[2] && (args[3] === 'in' || args[3] === 'out')) {
+                if (args[3] === 'in') {
+                    iface.inboundAcl = args[2];
+                } else {
+                    iface.outboundAcl = args[2];
+                }
+                return '';
+            }
+
+            if (cmd === 'no' && args[1] === 'ip' && args[2] === 'access-group' && args[3] && (args[4] === 'in' || args[4] === 'out')) {
+                if (args[4] === 'in') {
+                    iface.inboundAcl = undefined;
+                } else {
+                    iface.outboundAcl = undefined;
+                }
+                return '';
+            }
+
             if (cmd === 'switchport') {
                 if (args[1] === 'mode' && args[2] === 'access') {
                     iface.switchportMode = 'access';
@@ -726,10 +780,6 @@ show the available options.`;
                 iface.isSwitchport = false;
                 iface.vlan = undefined;
                 iface.switchportMode = undefined;
-                return '';
-            }
-
-            if (cmd === 'ip' && args[1] === 'access-group') {
                 return '';
             }
 
@@ -1242,13 +1292,26 @@ Switch2          Gig 0/1           125              S I   WS-C2960- Gig 0/1
                 return out;
             }
 
-            if (showCmd === 'access-lists') {
+            if (showCmd === 'access-lists' || (showCmd === 'ip' && showArgs[1] === 'access-lists')) {
                 let out = '';
                 for (const [aclId, rules] of this.acls.entries()) {
-                    out += `Standard IP access list ${aclId}\n`;
+                    const isNamedAcl = isNaN(Number(aclId));
+                    out += `${isNamedAcl ? 'Extended IP access list' : 'Standard IP access list'} ${aclId}\n`;
                     rules.forEach((rule, idx) => {
                         out += `    ${(idx + 1) * 10} ${rule}\n`;
                     });
+                }
+                const attachedAcls = Array.from(this.interfaces.values()).filter(iface => iface.inboundAcl || iface.outboundAcl);
+                if (attachedAcls.length > 0) {
+                    out += `\nInterface bindings:\n`;
+                    for (const iface of attachedAcls) {
+                        if (iface.inboundAcl) {
+                            out += `  ${iface.name} inbound ${iface.inboundAcl}\n`;
+                        }
+                        if (iface.outboundAcl) {
+                            out += `  ${iface.name} outbound ${iface.outboundAcl}\n`;
+                        }
+                    }
                 }
                 if (this.acls.size === 0) {
                     out = '*** No access lists configured ***\n';

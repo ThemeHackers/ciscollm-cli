@@ -17,6 +17,9 @@ export class ASADevice extends BaseDevice {
         ['Vlan2', { name: 'Vlan2', ip: null, subnet: null, securityLevel: 0, nameif: 'outside', adminShutdown: false }]
     ]);
 
+    private accessLists: Map<string, string[]> = new Map();
+    private accessGroups: Map<string, { aclName: string; direction: 'in' | 'out'; interfaceName: string }> = new Map();
+
     private activeInterface: string | null = null;
 
     constructor(initialHostname?: string) {
@@ -135,6 +138,36 @@ export class ASADevice extends BaseDevice {
                 iface.adminShutdown = true;
                 return '';
             }
+
+            if (command === 'access-group' && args[1] && (args[2] === 'in' || args[2] === 'out') && args[3] === 'interface' && args[4]) {
+                this.accessGroups.set(this.activeInterface, {
+                    aclName: args[1],
+                    direction: args[2] as 'in' | 'out',
+                    interfaceName: this.normalizeInterfaceName(args[4])
+                });
+                return '';
+            }
+        }
+
+        if (this.mode === 'GLOBAL_CONFIG') {
+            if (command === 'access-list' && args[1] && args[2]) {
+                const aclName = args[1];
+                const rule = args.slice(2).join(' ');
+                if (!this.accessLists.has(aclName)) {
+                    this.accessLists.set(aclName, []);
+                }
+                this.accessLists.get(aclName)!.push(rule);
+                return '';
+            }
+
+            if (command === 'access-group' && args[1] && (args[2] === 'in' || args[2] === 'out') && args[3] === 'interface' && args[4]) {
+                this.accessGroups.set(args[4], {
+                    aclName: args[1],
+                    direction: args[2] as 'in' | 'out',
+                    interfaceName: this.normalizeInterfaceName(args[4])
+                });
+                return '';
+            }
         }
 
         if (command === 'show' || (command === 'do' && args[1] === 'show')) {
@@ -154,6 +187,29 @@ export class ASADevice extends BaseDevice {
                         out += `${name.padEnd(24)} ${iface.nameif.padEnd(24)} ${iface.securityLevel}\n`;
                     }
                 }
+                return out;
+            }
+
+            if (showArgs[0] === 'access-list' || showArgs[0] === 'access-lists') {
+                if (this.accessLists.size === 0) {
+                    return 'No access lists configured.\n';
+                }
+
+                let out = '';
+                for (const [aclName, rules] of this.accessLists.entries()) {
+                    out += `access-list ${aclName}\n`;
+                    rules.forEach((rule, index) => {
+                        out += ` ${index + 1} ${rule}\n`;
+                    });
+                }
+
+                if (this.accessGroups.size > 0) {
+                    out += '\nApplied access-groups:\n';
+                    for (const [interfaceName, mapping] of this.accessGroups.entries()) {
+                        out += ` ${interfaceName} -> access-group ${mapping.aclName} ${mapping.direction} interface ${mapping.interfaceName}\n`;
+                    }
+                }
+
                 return out;
             }
         }

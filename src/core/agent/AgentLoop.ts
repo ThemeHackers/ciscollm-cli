@@ -126,13 +126,23 @@ export class CiscoAgentLoop {
             auditSpinner.succeed('Pre-Flight Network Audits completed.');
 
             const backupSpinner = createSpinner('Initializing device configuration backups to flash...').start();
+            let backupSuccessCount = 0;
+            let backupTotalCount = 0;
             try {
                 for (const [id, session] of this.coordinator.getSessions().entries()) {
+                    backupTotalCount++;
                     const tx = new TransactionManager();
-                    await tx.initializeBackup(session);
+                    const backed = await tx.initializeBackup(session);
                     this.transactions.set(id, tx);
+                    if (backed) backupSuccessCount++;
                 }
-                backupSpinner.succeed('Atomic configuration backups initialized.');
+                if (backupSuccessCount === backupTotalCount && backupTotalCount > 0) {
+                    backupSpinner.succeed(`Atomic configuration backups initialized (${backupSuccessCount}/${backupTotalCount} devices).`);
+                } else if (backupSuccessCount > 0) {
+                    backupSpinner.warn(`Partial backup: ${backupSuccessCount}/${backupTotalCount} devices backed up. Proceeding with caution.`);
+                } else {
+                    backupSpinner.warn(`Flash backup unavailable on all devices (${backupTotalCount} devices). Proceeding without backup.`);
+                }
             } catch (e: any) {
                 backupSpinner.warn(`Backup initialization skipped or partially completed: ${e.message}`);
             }
@@ -179,7 +189,7 @@ export class CiscoAgentLoop {
 
         let dynamicLoopActive = true;
         let executionDepth = 0;
-        const MAX_STEPS = 20;
+        const MAX_STEPS = 10;
 
         while (dynamicLoopActive && executionDepth < MAX_STEPS) {
             executionDepth++;
@@ -351,8 +361,12 @@ export class CiscoAgentLoop {
                     }
                 } else {
                     logger.heading('FINAL AGENT REASONING SUMMARY');
-                    const rawSummary = response.reasoning_content || response.content || '(No final response content provided)';
-                    console.log(chalk.green(rawSummary.replace(/\*\*/g, '')));
+                    let rawSummary = response.reasoning_content || response.content || '';
+                    rawSummary = rawSummary.replace(/\*\*([^*]+)\*\*/g, '$1').replace(/\*([^*\n]+)\*/g, '$1').trim();
+                    if (!rawSummary) {
+                        rawSummary = 'Task completed (No final summary generated).';
+                    }
+                    console.log(chalk.green(rawSummary));
                     dynamicLoopActive = false;
                 }
             }
@@ -376,19 +390,54 @@ export class CiscoAgentLoop {
 
         if (!this.fastTrack) {
             const postAuditSpinner = createSpinner('Running Post-Flight Network Audits...').start();
+            
+            let aggPre = { downInterfacesCount: 0, dynamicRoutesCount: 0, routingAdjacenciesCount: 0, pingReachability: false, timestamp: '' };
+            let aggPost = { downInterfacesCount: 0, dynamicRoutesCount: 0, routingAdjacenciesCount: 0, pingReachability: false, timestamp: '' };
+            const changedDevices: string[] = [];
+
             for (const [deviceId, preSnap] of preFlightSnapshots.entries()) {
                 try {
                     const postSnap = await networkAudit.takeSnapshot(deviceId);
                     postAuditSpinner.stop();
                     this.coordinator.recordAudit(deviceId, preSnap, postSnap);
-                    const report = NetworkAudit.renderAuditReport(preSnap, postSnap);
-                    console.log(report);
+
+    
+                    aggPre.downInterfacesCount += preSnap.downInterfacesCount;
+                    aggPre.dynamicRoutesCount  += preSnap.dynamicRoutesCount;
+                    aggPre.routingAdjacenciesCount += preSnap.routingAdjacenciesCount;
+                    aggPre.pingReachability = aggPre.pingReachability || preSnap.pingReachability;
+                    aggPre.timestamp = preSnap.timestamp;
+
+                    aggPost.downInterfacesCount += postSnap.downInterfacesCount;
+                    aggPost.dynamicRoutesCount  += postSnap.dynamicRoutesCount;
+                    aggPost.routingAdjacenciesCount += postSnap.routingAdjacenciesCount;
+                    aggPost.pingReachability = aggPost.pingReachability || postSnap.pingReachability;
+                    aggPost.timestamp = postSnap.timestamp;
+
+  
+                    if (
+                        preSnap.downInterfacesCount !== postSnap.downInterfacesCount ||
+                        preSnap.dynamicRoutesCount  !== postSnap.dynamicRoutesCount  ||
+                        preSnap.pingReachability    !== postSnap.pingReachability
+                    ) {
+                        changedDevices.push(deviceId);
+                    }
                 } catch (e: any) {
                     postAuditSpinner.stop();
                     logger.warn(`Post-flight audit failed for ${deviceId}: ${e.message}`);
                 }
             }
+
             if (postAuditSpinner.isSpinning) postAuditSpinner.stop();
+
+
+            if (preFlightSnapshots.size > 0) {
+                const report = NetworkAudit.renderAuditReport(aggPre, aggPost);
+                console.log(report);
+                if (changedDevices.length > 0) {
+                    console.log(chalk.yellow(`[~] Devices with detected changes: ${changedDevices.join(', ')}`));
+                }
+            }
         }
 
         const totalDurationMs = Date.now() - totalStartTime;
